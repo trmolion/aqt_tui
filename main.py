@@ -1,4 +1,5 @@
-from tui.main import main
+from tui.main import ClockApp
 
 if __name__ == "__main__":
-    main()
+    app = ClockApp()
+    app.run()

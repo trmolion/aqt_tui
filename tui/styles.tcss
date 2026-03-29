@@ -1,0 +1,24 @@
+/* Общий стиль для всех блоков-контейнеров */
+#clock_card, #actions_card, #info_card {
+    border: solid rgb(34, 148, 34);       /* рамка */
+    padding: 1;                   /* отступ внутри */
+    margin: 1;                   /* отступ снаружи */
+    background: $surface;         /* фон */
+}
+
+/* Заголовок внутри каждого блока (Label) */
+#clock_card > Label,
+#actions_card > Label,
+#info_card > Label:first-child {
+    background: $surface;
+    color: red;
+    padding: 0 2;
+    width: auto;
+    height: 1;
+    text-style: bold;
+    offset-x: -2;
+}
+
+Button:hover {
+    background: goldenrod;
+}
