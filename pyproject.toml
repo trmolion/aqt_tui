@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aqt-tui"
+version = "0.0.1"
+description = "Terminal User Interface for aqtinstaller"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aqtinstall>=3.1.11",
+    "textual>=8.2.0",
+    "requests>=2.31"
+]
+
+[tool.setuptools]
+# Явно перечисляем пакеты, которые нужно включить
+packages = ["tui", "scan_server"]
+
+[tool.setuptools.package-data]
+tui = ["*.tcss"]
+scan_server = []

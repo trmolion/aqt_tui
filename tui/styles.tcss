@@ -1,5 +1,5 @@
 /* Общий стиль для всех блоков-контейнеров */
-#clock_card, #actions_card, #info_card {
+#left_panel, #right_panel {
     border: solid rgb(34, 148, 34);       /* рамка */
     padding: 1;                   /* отступ внутри */
     margin: 1;                   /* отступ снаружи */
@@ -7,9 +7,8 @@
 }
 
 /* Заголовок внутри каждого блока (Label) */
-#clock_card > Label,
-#actions_card > Label,
-#info_card > Label:first-child {
+#left_panel > Label,
+#right_panel > Label {
     background: $surface;
     color: red;
     padding: 0 2;
@@ -19,6 +18,21 @@
     offset-x: -2;
 }
 
+#left_panel {
+    width: 30%;
+    padding: 1;
+}
+
+#right_panel {
+    width: 70%;
+    padding: 1;
+}
+
+Button {
+    width: 100%;
+    margin: 1;
+}
+
 Button:hover {
-    background: goldenrod;
+    background: rgb(90, 128, 233);
 }
