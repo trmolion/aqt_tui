@@ -33,6 +33,27 @@ Button {
     margin: 1;
 }
 
+#progress_container {
+    width: 100%;
+    height: auto;
+    padding: 1;
+}
+
+ProgressBar {
+    width: 100%;
+    margin-top: 1;
+}
+
+Label {
+    width: 100%;
+    text-style: bold;
+}
+
+Tree {
+    width: 100%;
+    height: 100%;
+}
+
 Button:hover {
     background: rgb(90, 128, 233);
 }
