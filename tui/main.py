@@ -1,11 +1,12 @@
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
-from textual.widgets import Header, Footer, Button, DirectoryTree, Static, RadioSet, RadioButton, Select, ProgressBar, Label, Tree
+from textual.containers import Horizontal, Vertical, ScrollableContainer
+from textual.widgets import Header, Footer, Button, DirectoryTree, Static, RadioSet, RadioButton, DataTable, ProgressBar, Label, Tree, Checkbox, Input
+from textual.coordinate import Coordinate
 from textual import work
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 
-from scan_server.aqt_interface import AqtConfig, get_available_oses, get_available_platform, get_versions_tree_with_config
+from scan_server.aqt_interface import AqtConfig, get_available_oses, get_available_platform, get_versions_tree_with_config, get_available_architectures, get_available_modules, run_installation_with_urls
 from scan_server.check_servers import get_urls_from_config, check_single_server
 
 class Aqt_tui_installer(App):
@@ -18,13 +19,19 @@ class Aqt_tui_installer(App):
         self.current_section = "main"
         self.available_oses = get_available_oses()   # список строк: 'windows', 'linux', 'mac'
         self.avaliable_os_platform = []
-
+        
+        self._sort_reverse = False
+        self._last_sort_column = None
+        
+        self.install_path = None
+        self.install_path_label = None
+        self.folder_name_input = None
 
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
-            with Vertical(id="left_panel"):
+            with ScrollableContainer(id="left_panel"):
                 self.config_btn = Button("1. Выбрать конфиг", id="config_btn")
                 self.more_inf_config_btn = Button("Подробности конфига", id="more_inf_config_btn", disabled=True)
                 self.host_os_btn = Button("2. Выбор ОС", id="host_os_btn", disabled=True)
@@ -88,7 +95,7 @@ class Aqt_tui_installer(App):
             self.show_more_information_about_config()
         elif event.button.id == "host_os_btn":
             self.show_os_selector()
-        elif event.button.id == "os_done_btn":           # обработка кнопки "Применить" выбора ОС
+        elif event.button.id == "os_done_btn":
             if self.config.host_os:
                 self.update_main_settings()
                 self._check_and_unlock()
@@ -110,6 +117,67 @@ class Aqt_tui_installer(App):
             self.start_config_verification(self.config.config_path)
         elif event.button.id == "version_btn":
             self.show_version_selector()
+        elif event.button.id == "compiler_btn":
+            self.show_compiler_selector()
+        elif event.button.id == "compiler_done_btn":
+            radio_set = self.query_one("#compiler_radio")
+            selected = None
+            for btn in radio_set.query(RadioButton):
+                if btn.value:
+                    selected = btn.id
+                    break
+            if selected:
+                self.config.arch = selected
+                self.update_main_settings()
+                self._check_and_unlock()
+                self._show_main_settings()
+                self.notify(f"Выбран компилятор: {selected}")
+            else:
+                self.notify("Выберите компилятор", severity="warning")
+        elif event.button.id == "modules_btn":
+            self.show_modules_selector()
+        elif event.button.id == "select_all_modules":
+            table = self.query_one("#modules_table")
+            col_index = table.get_column_index("select")
+            for row_index in range(len(table.rows)):
+                table.update_cell_at(Coordinate(row_index, col_index), "☑")
+        elif event.button.id == "modules_done_btn":
+            table = self.query_one("#modules_table")
+            col_index = table.get_column_index("select")
+            selected = []
+            for row_index, row_key in enumerate(table.rows):
+                row = table.get_row(row_key)
+                if row[col_index] == "☑":
+                    module_name = row[1]  # вторая колонка
+                    selected.append(module_name)
+            self.config.modules = selected
+            self.update_main_settings()
+            self._check_and_unlock()
+            self._show_main_settings()
+            self.notify(f"Выбрано модулей: {len(selected)}")
+        elif event.button.id == "path_btn":
+            self.select_path_install()
+        elif event.button.id == "accept_path_btn":
+            if self.install_path is None:
+                self.notify("Сначала выберите путь в дереве", severity="warning")
+                return
+            # Если чекбокс выбран, добавляем имя папки
+            make_dir_check = self.query_one("#make_dir_check")
+            if make_dir_check.value:
+                folder_name = self.query_one("#folder_name_input").value.strip()
+                if not folder_name:
+                    self.notify("Введите имя папки", severity="warning")
+                    return
+                final_path = self.install_path / folder_name
+            else:
+                final_path = self.install_path
+            self.config.install_path = final_path
+            self.update_main_settings()
+            self._check_and_unlock()
+            self._show_main_settings()
+            self.notify(f"Путь установки: {final_path}")
+        elif event.button.id == "install_btn":
+            self.run_installation()
             
         self.current_section = event.button.id
 
@@ -123,7 +191,7 @@ class Aqt_tui_installer(App):
             self.host_platform_btn.disabled = False
         if self.config.platform_host_os:
             self.version_btn.disabled = False
-        if self.config.version:          # добавлено
+        if self.config.version:
             self.compiler_btn.disabled = False
         if self.config.arch:
             self.modules_btn.disabled = False
@@ -131,6 +199,7 @@ class Aqt_tui_installer(App):
             self.path_btn.disabled = False
         if self.config.install_path:
             self.install_btn.disabled = False
+
 
 
     # === Выбор конфига ===
@@ -178,16 +247,34 @@ class Aqt_tui_installer(App):
 
 
 
-    def show_progress_indicator(self, message: str, total: int) -> None:
-        """Показывает индикатор прогресса в правой панели с заданным total."""
+    def show_progress_indicator(self, message: str, total: int = None, pulsing: bool = False) -> None:
+        """Показывает индикатор прогресса в правой панели."""
         right_panel = self.query_one("#right_panel")
         right_panel.remove_children()
         container = Vertical(id="progress_container")
         right_panel.mount(container)
         container.mount(Label(message))
-        # Создаём прогресс-бар с заданным total
-        self.progress_bar = ProgressBar(total=total, show_eta=False)
-        container.mount(self.progress_bar)
+        
+        if pulsing:
+            # Пульсирующий прогресс-бар (неопределённый)
+            self.progress_bar = ProgressBar(total=100, show_eta=False)
+            self.progress_bar.advance(50)  # начальная позиция
+            container.mount(self.progress_bar)
+            # Запускаем анимацию пульсации (можно через реактивный стиль, но проще так)
+            self.set_timer(0.1, self._pulse_progress)
+        else:
+            self.progress_bar = ProgressBar(total=total or 100, show_eta=False)
+            container.mount(self.progress_bar)
+
+    def _pulse_progress(self) -> None:
+        """Анимирует пульсацию прогресс-бара."""
+        if hasattr(self, 'progress_bar') and self.progress_bar.total is not None:
+            current = self.progress_bar.progress
+            if current >= 90:
+                self.progress_bar.advance(-80)
+            else:
+                self.progress_bar.advance(10)
+            self.set_timer(0.2, self._pulse_progress)
 
 
 
@@ -208,12 +295,23 @@ class Aqt_tui_installer(App):
     
         
     def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
-        path = event.path
-        if path.suffix == ".ini":
-            self.start_config_verification(path)
-        else:
-            self.notify("Выберите файл .ini", severity="warning")
-    
+        if self.current_section == "config_btn":
+            path = event.path
+            if path.suffix == ".ini":
+                self.start_config_verification(path)
+            else:
+                self.notify("Выберите файл .ini", severity="warning")
+
+
+    def on_directory_tree_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
+        if self.current_section == "path_btn":
+            self.install_path = event.path
+            self.notify(f"Выбран путь: {self.install_path}")
+            # Обновляем label
+            if self.install_path_label:
+                self.install_path_label.update(f"Выбран путь: {self.install_path}")
+            
+        
     
     
     def show_more_information_about_config(self) -> None:
@@ -251,9 +349,12 @@ class Aqt_tui_installer(App):
             lines.append("")
 
         # Кнопка обновления
+        scrl_cnt = ScrollableContainer()
+        right_panel.mount(scrl_cnt)
         refresh_btn = Button("Обновить проверку", id="refresh_config_check")
-        right_panel.mount(Static("\n".join(lines), id="config_details"))
-        right_panel.mount(refresh_btn)
+        scrl_cnt.mount(Static("\n".join(lines), id="config_details"))
+        scrl_cnt.mount(refresh_btn)
+        
         
         
     def _show_main_settings(self) -> None:
@@ -314,6 +415,7 @@ class Aqt_tui_installer(App):
         
 
 
+    # === Выбор версий Qt ===
     def show_version_selector(self) -> None:
         if not self.config.config_path:
             self.notify("Сначала выберите конфиг", severity="warning")
@@ -353,6 +455,8 @@ class Aqt_tui_installer(App):
         right_panel.mount(tree)
         tree.focus()
 
+
+
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         """Обработка выбора версии в дереве."""
         if event.node.is_root:
@@ -368,3 +472,243 @@ class Aqt_tui_installer(App):
         else:
             # Если узел — мажорная версия, просто раскрываем/закрываем, не сохраняем
             event.node.toggle()
+
+
+
+    # === Выбор версий компилятора для конкретной версии
+    def show_compiler_selector(self) -> None:
+        if not self.config.config_path:
+            self.notify("Сначала выберите конфиг", severity="warning")
+            return
+        if not self.config.host_os or not self.config.platform_host_os or not self.config.version:
+            self.notify("Сначала выберите ОС, платформу и версию", severity="warning")
+            return
+
+        working_urls = self.get_working_urls()
+        if not working_urls:
+            self.notify("Нет доступных серверов для получения списка архитектур", severity="warning")
+            return
+
+        try:
+            arches = get_available_architectures(
+                working_urls,
+                self.config.host_os,
+                self.config.platform_host_os,
+                self.config.version
+            )
+            if not arches:
+                self.notify("Нет доступных архитектур для выбранной версии", severity="warning")
+                return
+        except Exception as e:
+            self.notify(f"Ошибка получения архитектур: {e}", severity="error")
+            return
+
+        right_panel = self.query_one("#right_panel")
+        right_panel.remove_children()
+
+        # Создаём радиокнопки для каждой архитектуры
+        buttons = [RadioButton(arch, id=arch) for arch in arches]
+        radio_set = RadioSet(*buttons, id="compiler_radio")
+        right_panel.mount(radio_set)
+        done_btn = Button("Применить", id="compiler_done_btn")
+        right_panel.mount(done_btn)
+        
+        
+    def show_modules_selector(self) -> None:
+        if not self.config.config_path:
+            self.notify("Сначала выберите конфиг", severity="warning")
+            return
+        if not all([self.config.host_os, self.config.platform_host_os, self.config.version, self.config.arch]):
+            self.notify("Сначала выберите ОС, платформу, версию и компилятор", severity="warning")
+            return
+
+        working_urls = self.get_working_urls()
+        if not working_urls:
+            self.notify("Нет доступных серверов для получения списка модулей", severity="warning")
+            return
+
+        try:
+            module_data = get_available_modules(
+                working_urls,
+                self.config.host_os,
+                self.config.platform_host_os,
+                self.config.version,
+                self.config.arch
+            )
+            if not module_data:
+                self.notify("Нет доступных модулей для выбранной конфигурации", severity="warning")
+                return
+        except Exception as e:
+            self.notify(f"Ошибка получения модулей: {e}", severity="error")
+            return
+
+        right_panel = self.query_one("#right_panel")
+        right_panel.remove_children()
+
+        # Создаём таблицу
+        table = DataTable(id="modules_table")
+        table.add_columns(
+            ("Выбрать", "select"),
+            ("Модуль", "module"),
+            ("Описание", "description"),
+            ("Дата релиза", "release_date"),
+            ("Размер загрузки", "compressed_size"),
+            ("Размер установки", "uncompressed_size")
+        )
+        table.cursor_type = "row"
+
+        # Заполняем строки
+        for module_name, info in module_data.table_data.items():
+            display_name = info.get("DisplayName", "")
+            release_date = info.get("ReleaseDate", "")
+            compressed = info.get("CompressedSize", "")
+            uncompressed = info.get("UncompressedSize", "")
+            table.add_row("☐", module_name, display_name, release_date, compressed, uncompressed, key=module_name)
+
+        # Кнопки
+        select_all_btn = Button("Выбрать всё", id="select_all_modules")
+        done_btn = Button("Применить", id="modules_done_btn")
+
+        # Монтируем всё в right_panel
+        right_panel.mount(table)
+        right_panel.mount(select_all_btn)
+        right_panel.mount(done_btn)
+        
+        def sort_key(row_tuple):
+            # row_tuple — это кортеж значений строки: (select, module, description, release_date, compressed, uncompressed)
+            size_str = row_tuple[4]  # колонка "Размер загрузки" на позиции 4
+            return self._parse_size(size_str)
+        # Сортируем строки по убыванию (reverse=True)
+        table.sort(key=sort_key, reverse=True)
+
+        table.focus()
+            
+        
+        
+    def on_data_table_row_selected(self, event: DataTable.CellSelected) -> None:
+        if event.data_table.id == "modules_table":
+            table = event.data_table
+            row_index = event.cursor_row
+            col_index = table.get_column_index("select")
+            current = table.get_row_at(row_index)[col_index]
+            new_state = "☑" if current == "☐" else "☐"
+            table.update_cell_at(Coordinate(row_index, col_index), new_state)
+            
+            
+    def _parse_size(self, size_str: str) -> float:
+        """Преобразует строку размера (например, '113.2M', '468.5M') в число (байты)."""
+        if not size_str:
+            return 0
+        size_str = size_str.strip().upper()
+        multipliers = {'K': 1024, 'M': 1024**2, 'G': 1024**3, 'T': 1024**4}
+        if size_str[-1] in multipliers:
+            num = float(size_str[:-1])
+            return num * multipliers[size_str[-1]]
+        else:
+            # Предполагаем, что число в байтах
+            return float(size_str)
+        
+        
+        
+    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        if event.data_table.id != "modules_table":
+            return
+        
+        table = event.data_table
+        column_key = event.column_key
+        
+        # Сортируем только по колонкам размера
+        if column_key in ("compressed_size", "uncompressed_size"):
+            # Меняем направление сортировки при повторном клике
+            if hasattr(self, '_last_sort_column') and self._last_sort_column == column_key:
+                self._sort_reverse = not getattr(self, '_sort_reverse', False)
+            else:
+                self._sort_reverse = False
+            self._last_sort_column = column_key
+            
+            # Сортируем, указывая колонку и key-функцию для одного значения
+            table.sort(column_key, key=self._parse_size, reverse=self._sort_reverse)
+            
+            
+    def select_path_install(self) -> None:
+        right_panel = self.query_one("#right_panel")
+        right_panel.remove_children()
+        
+        # Label для отображения текущего пути
+        str_lbl = self.install_path if self.install_path is not None else "Путь не выбран"
+        path_label = Label(str_lbl, id="install_path_label")
+        right_panel.mount(path_label)
+        self.install_path_label = path_label
+        
+        # Checkbox
+        make_dir_check = Checkbox("Создавать папку", id="make_dir_check")
+        right_panel.mount(make_dir_check)
+        
+        # Input для имени папки (изначально скрыт)
+        folder_input = Input(placeholder="Имя папки", id="folder_name_input")
+        folder_input.styles.display = "none"
+        right_panel.mount(folder_input)
+        self.folder_name_input = folder_input
+        
+        # Кнопка "Принять путь"
+        accept_btn = Button("Принять путь", id="accept_path_btn")
+        right_panel.mount(accept_btn)
+        
+        # DirectoryTree
+        tree = DirectoryTree(Path.home())
+        right_panel.mount(tree)
+        tree.focus()
+    
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if event.checkbox.id == "make_dir_check":
+            folder_input = self.query_one("#folder_name_input")
+            if event.value:
+                folder_input.styles.display = "block"
+                folder_input.focus()
+            else:
+                folder_input.styles.display = "none"
+                folder_input.value = ""  # очищаем ввод
+                
+    
+    
+    def run_installation(self) -> None:
+        """Запускает процесс установки Qt с выбранными параметрами."""
+        if not self.config.is_valid():
+            self.notify("Не все параметры выбраны", severity="warning")
+            return
+        
+        # Показываем прогресс-бар и запускаем установку в потоке
+        self.show_progress_indicator("Установка Qt...", pulsing=True)  # total можно убрать или оставить для имитации
+        self.install_worker()
+        
+    
+    @work(thread=True)
+    def install_worker(self) -> None:
+        try:
+            working_urls = self.get_working_urls()
+            if not working_urls:
+                self.call_from_thread(self.on_installation_done, False, "Нет доступных серверов")
+                return
+            run_installation_with_urls(self.config, working_urls)
+            self.call_from_thread(self.on_installation_done, True, None)
+        except Exception as e:
+            self.call_from_thread(self.on_installation_done, False, str(e))
+        
+        
+    def _log_installation(self, message: str) -> None:
+        """Выводит лог в консоль и в уведомления (опционально)."""
+        self.log.info(message)
+        # Можно также добавить в right_panel текстовый лог, но для простоты оставим notify
+        if "Ошибка" in message:
+            self.notify(message, severity="error")
+                
+            
+    def on_installation_done(self, success: bool, error_msg: Optional[str]) -> None:
+        # Останавливаем пульсацию (если есть)
+        if hasattr(self, '_pulse_timer'):
+            self._pulse_timer.stop()
+        self._show_main_settings()
+        if success:
+            self.notify("Установка завершена успешно!", severity="information")
+        else:
+            self.notify(f"Ошибка установки: {error_msg}", severity="error")

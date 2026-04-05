@@ -57,3 +57,8 @@ Tree {
 Button:hover {
     background: rgb(90, 128, 233);
 }
+
+#path_label {
+    text-align: center;
+    text-style: bold;
+}
