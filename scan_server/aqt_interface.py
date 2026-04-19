@@ -1,4 +1,6 @@
 """Утилиты для работы с aqtinstaller."""
+import sys
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -7,6 +9,8 @@ from aqt.installer import run_installer
 from tempfile import TemporaryDirectory
 from aqt.helper import Settings
 from aqt.metadata import ArchiveId, MetadataFactory, Version, ModuleData
+
+import shutil
 
 class AqtConfig:
     """Хранит и управляет настройками установки Qt."""
@@ -222,11 +226,32 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
         
         packages = qt_archives.get_packages()
         
-        # Устанавливаем
-        with TemporaryDirectory() as temp_dir:
-            archive_dest = Path(temp_dir)
-            # run_installer(archives, base_dir, sevenzip, keep, archive_dest, dry_run)
-            run_installer(packages, str(config.install_path), None, False, archive_dest, dry_run=False)
+        install_path = config.install_path
+        folder_created_by_us = False
+        
+        # import logging
+        # logging.getLogger("aqt").info(f"===TOTAL_PACKAGES:{len(packages)}===")
+        
+        import sys
+        print(f"===TOTAL_PACKAGES:{len(packages)}===")
+        sys.stdout.flush()
+
+        # 1. Создаем папку, если её физически не существует
+        if not install_path.exists():
+            install_path.mkdir(parents=True, exist_ok=True)
+            folder_created_by_us = True
+        
+        try:
+            # Устанавливаем
+            with TemporaryDirectory() as temp_dir:
+                archive_dest = Path(temp_dir)
+                run_installer(packages, str(install_path), None, False, archive_dest, dry_run=False)
+                
+        except Exception as e:
+            # 2. Удаляем папку при ошибке установки, НО только если мы её сами создали
+            if folder_created_by_us and install_path.exists():
+                shutil.rmtree(install_path, ignore_errors=True)
+            raise e  # Пробрасываем ошибку дальше, чтобы main.py мог её перехватить
             
     finally:
         # Восстанавливаем настройки
@@ -248,6 +273,3 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
             Settings._shared_state['_ignore_hash_override'] = old_ignore
         elif '_ignore_hash_override' in Settings._shared_state:
             del Settings._shared_state['_ignore_hash_override']
-    
-    
-    

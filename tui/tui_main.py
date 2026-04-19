@@ -1,10 +1,19 @@
+import os
+import logging
+import queue
+import subprocess
+import json
+import sys
+import tempfile
+import threading
+
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, ScrollableContainer
-from textual.widgets import Header, Footer, Button, DirectoryTree, Static, RadioSet, RadioButton, DataTable, ProgressBar, Label, Tree, Checkbox, Input
+from textual.widgets import Header, Footer, Button, DirectoryTree, Static, RadioSet, RadioButton, DataTable, ProgressBar, Label, Tree, Checkbox, Input, RichLog
 from textual.coordinate import Coordinate
 from textual import work
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Dict, List, Any
 
 from scan_server.aqt_interface import AqtConfig, get_available_oses, get_available_platform, get_versions_tree_with_config, get_available_architectures, get_available_modules, run_installation_with_urls
 from scan_server.check_servers import get_urls_from_config, check_single_server
@@ -570,9 +579,12 @@ class Aqt_tui_installer(App):
         done_btn = Button("Применить", id="modules_done_btn")
 
         # Монтируем всё в right_panel
-        right_panel.mount(table)
-        right_panel.mount(select_all_btn)
-        right_panel.mount(done_btn)
+        podlojka = ScrollableContainer()
+        right_panel.mount(podlojka)
+        
+        podlojka.mount(table)
+        podlojka.mount(select_all_btn)
+        podlojka.mount(done_btn)
         
         def sort_key(row_tuple):
             # row_tuple — это кортеж значений строки: (select, module, description, release_date, compressed, uncompressed)
@@ -630,6 +642,7 @@ class Aqt_tui_installer(App):
             table.sort(column_key, key=self._parse_size, reverse=self._sort_reverse)
             
             
+            
     def select_path_install(self) -> None:
         right_panel = self.query_one("#right_panel")
         right_panel.remove_children()
@@ -659,6 +672,8 @@ class Aqt_tui_installer(App):
         right_panel.mount(tree)
         tree.focus()
     
+    
+    
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         if event.checkbox.id == "make_dir_check":
             folder_input = self.query_one("#folder_name_input")
@@ -669,46 +684,151 @@ class Aqt_tui_installer(App):
                 folder_input.styles.display = "none"
                 folder_input.value = ""  # очищаем ввод
                 
-    
-    
+                
+                
     def run_installation(self) -> None:
-        """Запускает процесс установки Qt с выбранными параметрами."""
+        """Запускает установку в отдельном процессе и читает вывод в реальном времени."""
         if not self.config.is_valid():
             self.notify("Не все параметры выбраны", severity="warning")
             return
-        
-        # Показываем прогресс-бар и запускаем установку в потоке
-        self.show_progress_indicator("Установка Qt...", pulsing=True)  # total можно убрать или оставить для имитации
-        self.install_worker()
-        
-    
-    @work(thread=True)
-    def install_worker(self) -> None:
+
+        # Подготавливаем UI
+        self.setup_logging_ui()
+
+        # Сериализуем конфигурацию во временный JSON
+        config_dict = {
+            'config_path': str(self.config.config_path) if self.config.config_path else None,
+            'host_os': self.config.host_os,
+            'platform_host_os': self.config.platform_host_os,
+            'version': self.config.version,
+            'arch': self.config.arch,
+            'modules': self.config.modules,
+            'install_path': str(self.config.install_path) if self.config.install_path else None,
+            'working_urls': self.get_working_urls(),
+        }
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(config_dict, f)
+            self.config_json_path = f.name
+
+        # Запускаем подпроцесс с захватом stdout
+        self.install_process = subprocess.Popen(
+            [sys.executable, "install_worker.py", self.config_json_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1,
+            start_new_session=True
+        )
+
+        self.log_queue = queue.Queue()
+        self.stop_reading = False
+
+        # Поток для чтения вывода процесса
+        self.reader_thread = threading.Thread(target=self._read_process_output, daemon=True)
+        self.reader_thread.start()
+
+        # Таймер для обработки очереди в главном потоке
+        self._log_timer = self.set_interval(0.05, self._process_log_queue)
+        # Таймер для проверки завершения процесса
+        self._completion_timer = self.set_interval(0.2, self._check_process_completion)
+
+    def _read_process_output(self):
+        """Читает stdout процесса и кладёт строки в очередь."""
         try:
-            working_urls = self.get_working_urls()
-            if not working_urls:
-                self.call_from_thread(self.on_installation_done, False, "Нет доступных серверов")
-                return
-            run_installation_with_urls(self.config, working_urls)
-            self.call_from_thread(self.on_installation_done, True, None)
+            for line in iter(self.install_process.stdout.readline, ''):
+                if self.stop_reading:
+                    break
+                self.log_queue.put(line)
         except Exception as e:
-            self.call_from_thread(self.on_installation_done, False, str(e))
+            self.log_queue.put(f"ERROR reading output: {e}\n")
+        finally:
+            self.log_queue.put(None)  # сигнал завершения
+
+    def _process_log_queue(self):
+        """Обрабатывает накопившиеся строки из очереди в главном потоке."""
+        try:
+            while True:
+                line = self.log_queue.get_nowait()
+                if line is None:
+                    self._log_timer.stop()
+                    break
+                self._handle_log_line(line)
+        except queue.Empty:
+            pass
+
+    def _handle_log_line(self, line: str):
+        """Обрабатывает одну строку лога."""
+        clean = line.strip()
+        if clean:
+            self.rich_log.write(clean)
+            # Обновление прогресса
+            if "Downloading" in clean or "Extracting" in clean or "Finished" in clean:
+                if hasattr(self, 'install_progress') and self.install_progress.total:
+                    if self.install_progress.progress < self.install_progress.total:
+                        self.install_progress.advance(1)
+            # Установка общего количества пакетов
+            if "===TOTAL_PACKAGES:" in clean:
+                try:
+                    total_pkgs = int(clean.split(":")[1].replace("===", ""))
+                    self.install_progress.total = total_pkgs * 2
+                    self.install_progress.update(progress=0)
+                except ValueError:
+                    pass
+
+    def _check_process_completion(self):
+        """Проверяет, завершился ли процесс."""
+        if self.install_process.poll() is not None:
+            self._completion_timer.stop()
+            self.set_timer(0.5, self._finish_installation)
+
+    def _finish_installation(self):
+        """Завершает установку, останавливает таймеры и закрывает ресурсы."""
+        self.stop_reading = True
+        if hasattr(self, '_log_timer'):
+            self._log_timer.stop()
+        if self.reader_thread.is_alive():
+            self.reader_thread.join(timeout=1.0)
+        self.install_process.stdout.close()
+        exit_code = self.install_process.wait()
+        success = (exit_code == 0)
+        # Удаляем временный JSON-файл
+        try:
+            os.unlink(self.config_json_path)
+        except OSError:
+            pass
+        self.on_installation_done(success, None if success else f"Процесс завершился с кодом {exit_code}")
         
         
-    def _log_installation(self, message: str) -> None:
-        """Выводит лог в консоль и в уведомления (опционально)."""
-        self.log.info(message)
-        # Можно также добавить в right_panel текстовый лог, но для простоты оставим notify
-        if "Ошибка" in message:
-            self.notify(message, severity="error")
-                
-            
-    def on_installation_done(self, success: bool, error_msg: Optional[str]) -> None:
-        # Останавливаем пульсацию (если есть)
-        if hasattr(self, '_pulse_timer'):
-            self._pulse_timer.stop()
-        self._show_main_settings()
+    def setup_logging_ui(self) -> None:
+        """Перестраивает правую панель под окно установки."""
+        right_panel = self.query_one("#right_panel")
+        right_panel.remove_children()
+
+        self.install_progress = ProgressBar(total=100, show_eta=True)
+        self.rich_log = RichLog(highlight=True, markup=False, wrap=True)
+
+        right_panel.mount(
+            Label("Установка Qt... ", classes="title-label"),
+            self.install_progress,
+            self.rich_log
+        )
+        
+        
+    def on_installation_done(self, success: bool, error_msg: str = None) -> None:
+        """Вызывается после завершения установки."""
+        # Очищаем таймеры
+        if hasattr(self, '_log_timer'):
+            self._log_timer.stop()
+        if hasattr(self, '_completion_timer'):
+            self._completion_timer.stop()
+
         if success:
-            self.notify("Установка завершена успешно!", severity="information")
+            self.rich_log.write("\n[green]Установка успешно завершена![/]")
+            self.notify("Установка Qt завершена успешно", severity="information")
         else:
+            self.rich_log.write(f"\n[red]Ошибка установки: {error_msg}[/]")
             self.notify(f"Ошибка установки: {error_msg}", severity="error")
+
+        # Возвращаем основную панель настроек через 2 секунды
+        self.set_timer(2.0, self._show_main_settings)    
