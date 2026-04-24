@@ -1,6 +1,7 @@
 """Утилиты для работы с aqtinstaller."""
-import sys
-import logging
+import tempfile
+import configparser
+import os, sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -201,17 +202,56 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
         raise ValueError("No URLs provided")
     
     # Временно подменяем настройки, как ранее
+    old_configfile = Settings.configfile
     old_baseurl = Settings._shared_state.get('_baseurl', None)
     old_fallbacks = Settings._shared_state.get('_fallbacks', None)
     old_trusted = Settings._shared_state.get('_trusted_mirrors', None)
     old_ignore = Settings._shared_state.get('_ignore_hash_override', None)
+
+    temp_ini = None
     
     try:
-        Settings._shared_state['_baseurl'] = urls[0]
-        Settings._shared_state['_fallbacks'] = urls[1:] if len(urls) > 1 else [urls[0]]
-        Settings._shared_state['_trusted_mirrors'] = urls
-        Settings._shared_state['_ignore_hash_override'] = True  # отключаем проверку хэша для скорости
+        # Settings._shared_state['_baseurl'] = urls[0]
+        # Settings._shared_state['_fallbacks'] = urls[1:] if len(urls) > 1 else [urls[0]]
+        # Settings._shared_state['_trusted_mirrors'] = urls
+        # Settings._shared_state['_ignore_hash_override'] = True  # отключаем проверку хэша для скорости
+
+        # Settings.baseurl = urls[0]
+        # Settings.fallbacks = urls[1:] if len(urls) > 1 else [urls[0]]
+
+        temp_ini = tempfile.NamedTemporaryFile(mode='w', suffix='.ini', delete=False)
+        parser = configparser.ConfigParser()
+        # Читаем оригинальный settings.ini (чтобы не потерять остальные настройки)
+        parser.read(Settings.configfile)
+
+        if not parser.has_section('aqt'):
+            parser.add_section('aqt')
+        parser.set('aqt', 'baseurl', urls[0])
         
+        # Меняем fallbacks
+        if not parser.has_section('mirrors'):
+            parser.add_section('mirrors')
+        fallback_str = '\n'.join(urls[1:]) if len(urls) > 1 else ''
+        if fallback_str:
+            parser.set('mirrors', 'fallbacks', fallback_str)
+        else:
+            parser.remove_option('mirrors', 'fallbacks')
+        # Меняем trusted_mirrors
+        parser.set('mirrors', 'trusted_mirrors', '\n'.join(urls))
+        
+        # Отключаем проверку хеша
+        if not parser.has_section('requests'):
+            parser.add_section('requests')
+        parser.set('requests', 'INSECURE_NOT_FOR_PRODUCTION_ignore_hash', 'True')
+        
+        parser.write(temp_ini)
+        temp_ini.close()
+        
+        # 2. Подменяем путь к конфигу для текущего процесса и всех воркеров
+        Settings.configfile = temp_ini.name
+        Settings.load_settings(file=temp_ini.name)
+
+
         # Создаём архивы
         qt_archives = QtArchives(
             os_name=config.host_os,
@@ -232,8 +272,9 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
         # import logging
         # logging.getLogger("aqt").info(f"===TOTAL_PACKAGES:{len(packages)}===")
         
-        import sys
         print(f"===TOTAL_PACKAGES:{len(packages)}===")
+        print(f"Using baseurl: {Settings.baseurl}", file=sys.stderr)
+        print(f"Using fallbacks: {Settings.fallbacks}", file=sys.stderr)
         sys.stdout.flush()
 
         # 1. Создаем папку, если её физически не существует
@@ -273,3 +314,28 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
             Settings._shared_state['_ignore_hash_override'] = old_ignore
         elif '_ignore_hash_override' in Settings._shared_state:
             del Settings._shared_state['_ignore_hash_override']
+
+        if temp_ini:
+            os.unlink(temp_ini.name)
+        Settings.configfile = old_configfile
+        Settings.load_settings(file=old_configfile)
+    
+    # cmd = [
+    #     sys.executable, "-m", "aqt", "install-qt",
+    #     "-O", config.host_os,
+    #     "linux",            # или windows, mac
+    #     config.platform_host_os,
+    #     config.version,
+    #     config.arch,
+    #     "-m", ",".join(config.modules),
+    #     "--outputdir", str(config.install_path),
+    #     "--base", urls[0]
+    # ]
+    # if len(urls) > 1:
+    #     cmd.extend(["--fallbacks"] + urls[1:])
+
+    # import subprocess
+    
+    # result = subprocess.run(cmd, capture_output=True, text=True)
+    # if result.returncode != 0:
+    #     raise RuntimeError(f"aqt failed: {result.stderr}")

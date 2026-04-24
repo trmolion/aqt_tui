@@ -2,8 +2,7 @@ import configparser
 import requests
 import time
 from pathlib import Path
-from urllib.parse import urljoin
-from typing import Dict, List, Optional
+from typing import Dict, List, Any
 
 
 
