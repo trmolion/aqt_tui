@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import sys
 import json
 import logging
@@ -30,7 +31,7 @@ def setup_logging(log_file_path: Path):
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
 
-    # Уровень корневого логгера – DEBUG, чтобы всё писалось
+    # Уровень корневого логгера – DEBUG, чтобы ваще всё писалось
     root_logger.setLevel(logging.DEBUG)
 
     # Логгер aqt должен передавать сообщения родительскому (root), это по умолчанию True
@@ -38,18 +39,12 @@ def setup_logging(log_file_path: Path):
     aqt_logger.setLevel(logging.DEBUG)
     aqt_logger.propagate = True
 
+
 def main():
     if len(sys.argv) != 2:
         print("Usage: install_worker.py <config_json_file>")
         sys.exit(1)
-        
-    # # Отключаем файловый логгер aqt
-    # for handler in logging.root.handlers[:]:
-    #     if isinstance(handler, logging.FileHandler):
-    #         logging.root.removeHandler(handler)
-    # # Настраиваем вывод в stdout
-    # logging.basicConfig(level=logging.DEBUG, stream=sys.stdout, format='%(message)s')
-
+    
     json_path = Path(sys.argv[1])
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
@@ -65,27 +60,22 @@ def main():
 
     working_urls = data['working_urls']
 
-    # Настраиваем логгер aqt для вывода в stdout
-    # aqt_logger = logging.getLogger("aqt")
-    # aqt_logger.setLevel(logging.DEBUG)
-    # handler = logging.StreamHandler(sys.stdout)
-    # handler.setFormatter(logging.Formatter('%(message)s'))
-    # aqt_logger.addHandler(handler)
-
     if config.install_path:
-        log_file = config.install_path / "install.log"
+        log_file = config.install_path / "install_qt.log"
         setup_logging(log_file)
         print(f"=== INSTALLATION LOG WILL BE SAVED TO {log_file} ===", flush=True)
     else:
-        # Если путь не задан, пишем только в stdout
+        # Если путь не задан то пишем только в stdout
         logging.basicConfig(level=logging.DEBUG, stream=sys.stdout, format='%(message)s')
     
+    original_cwd = os.getcwd()
     try:
         print("=== INSTALLATION STARTED ===", flush=True)
-        # Вызов функции установки
+        # Пошла установка
+        os.chdir(config.install_path)
         run_installation_with_urls(config, working_urls)
         
-        # Если aqt по какой-то причине не бросил SystemExit(0), мы всё равно считаем это успехом
+        # Ну и для красоты
         print("=== INSTALLATION SUCCESS ===", flush=True)
 
     except SystemExit as e:
@@ -97,9 +87,12 @@ def main():
             sys.exit(e.code)
             
     except Exception as e:
-        # Ловим все остальные настоящие ошибки
+        # Ловим все остальные ошибки
         print(f"=== INSTALLATION FAILED: {str(e)} ===", flush=True)
         sys.exit(1)
+        
+    finally:
+        os.chdir(original_cwd)
 
 if __name__ == "__main__":
     main()

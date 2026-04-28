@@ -31,7 +31,6 @@ def get_urls_from_config(config_path: Path) -> List[str]:
             fallbacks = [u.strip() for u in fallbacks_str.split() if u.strip()]
             urls.extend(fallbacks)
 
-    # удаляем дубликаты
     seen = set()
     unique_urls = []
     for url in urls:
@@ -44,7 +43,6 @@ def get_urls_from_config(config_path: Path) -> List[str]:
 
 def check_single_server(url: str) -> Dict[str, Any]:
         """Проверяет один сервер и возвращает словарь с результатом."""
-        # test_url = urljoin(url, "online/qtsdkrepository/")
         start = time.time()
         try:
             resp = requests.get(url, timeout=5, stream=True)
@@ -73,7 +71,6 @@ def check_servers_in_config(config_path: Path) -> List[Dict[str, Any]]:
 
     results = []
     for url in unique_urls:
-        # test_url = urljoin(url, "online/qtsdkrepository/")
         start = time.time()
         try:
             resp = requests.head(url, timeout=5, verify=True)
@@ -104,8 +101,6 @@ def is_config_valid(config_path: Path) -> bool:
     Проверяет, доступен ли хотя бы один сервер из конфига.
     """
     results = check_servers_in_config(config_path)
-    # Если ни одного URL нет, возвращаем False (невалидный конфиг)
     if not results:
         return False
-    # Иначе True, если хотя бы один сервер доступен
     return any(results.values())

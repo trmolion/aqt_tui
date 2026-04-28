@@ -1,4 +1,5 @@
 """Утилиты для работы с aqtinstaller."""
+import logging
 import tempfile
 import configparser
 import os, sys
@@ -16,13 +17,13 @@ import shutil
 class AqtConfig:
     """Хранит и управляет настройками установки Qt."""
     def __init__(self):
-        self.config_path: Optional[Path] = None
-        self.host_os: Optional[str] = None      # 'windows', 'linux', 'mac'
-        self.platform_host_os: Optional[str] = None
-        self.version: Optional[str] = None
-        self.arch: Optional[str] = None          # компилятор, архитектура
-        self.modules: List[str] = []             # например, ['debug_info', 'qtdatavis3d']
-        self.install_path: Optional[Path] = None
+        self.config_path: Optional[Path] = None     # путь с конфигом для установки
+        self.host_os: Optional[str] = None          # 'windows', 'linux', 'mac'
+        self.platform_host_os: Optional[str] = None # под какой компилятор Qt
+        self.version: Optional[str] = None          # версия qt
+        self.arch: Optional[str] = None             # компилятор, архитектура
+        self.modules: List[str] = []                # список модулей
+        self.install_path: Optional[Path] = None    # путь установки qt
 
     def is_valid(self) -> bool:
         """Проверяет, заполнены ли все обязательные поля."""
@@ -192,7 +193,7 @@ def get_available_modules(urls: List[str], host_os: str, target: str, version: s
             del Settings._shared_state['_ignore_hash_override']
             
             
-    
+            
     
 def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
     """
@@ -201,7 +202,24 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
     if not urls:
         raise ValueError("No URLs provided")
     
-    # Временно подменяем настройки, как ранее
+    # --- ПЕРЕНАСТРОЙКА ЛОГГЕРА AQT ---
+    if config.install_path:
+        log_path = config.install_path / "aqtinstall.log"
+        # Получаем логгер aqt
+        aqt_logger = logging.getLogger("aqt")
+        # Удаляем все старые обработчики
+        for handler in aqt_logger.handlers[:]:
+            aqt_logger.removeHandler(handler)
+        # Добавляем обработчик в нужный файл
+        file_handler = logging.FileHandler(log_path, mode='w', encoding='utf-8')
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        aqt_logger.addHandler(file_handler)
+        aqt_logger.setLevel(logging.DEBUG)
+        # Не забываем также установить Settings.logfile для совместимости
+        Settings.logfile = log_path
+    # --- КОНЕЦ ПЕРЕНАСТРОЙКИ ---
+    
+    # Временно подменяем настройки для скачивания
     old_configfile = Settings.configfile
     old_baseurl = Settings._shared_state.get('_baseurl', None)
     old_fallbacks = Settings._shared_state.get('_fallbacks', None)
@@ -211,14 +229,6 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
     temp_ini = None
     
     try:
-        # Settings._shared_state['_baseurl'] = urls[0]
-        # Settings._shared_state['_fallbacks'] = urls[1:] if len(urls) > 1 else [urls[0]]
-        # Settings._shared_state['_trusted_mirrors'] = urls
-        # Settings._shared_state['_ignore_hash_override'] = True  # отключаем проверку хэша для скорости
-
-        # Settings.baseurl = urls[0]
-        # Settings.fallbacks = urls[1:] if len(urls) > 1 else [urls[0]]
-
         temp_ini = tempfile.NamedTemporaryFile(mode='w', suffix='.ini', delete=False)
         parser = configparser.ConfigParser()
         # Читаем оригинальный settings.ini (чтобы не потерять остальные настройки)
@@ -247,11 +257,10 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
         parser.write(temp_ini)
         temp_ini.close()
         
-        # 2. Подменяем путь к конфигу для текущего процесса и всех воркеров
+        # Подменяем путь к конфигу для текущего процесса и всех воркеров
         Settings.configfile = temp_ini.name
         Settings.load_settings(file=temp_ini.name)
-
-
+                    
         # Создаём архивы
         qt_archives = QtArchives(
             os_name=config.host_os,
@@ -269,15 +278,12 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
         install_path = config.install_path
         folder_created_by_us = False
         
-        # import logging
-        # logging.getLogger("aqt").info(f"===TOTAL_PACKAGES:{len(packages)}===")
-        
         print(f"===TOTAL_PACKAGES:{len(packages)}===")
         print(f"Using baseurl: {Settings.baseurl}", file=sys.stderr)
         print(f"Using fallbacks: {Settings.fallbacks}", file=sys.stderr)
         sys.stdout.flush()
 
-        # 1. Создаем папку, если её физически не существует
+        # Создаем папку
         if not install_path.exists():
             install_path.mkdir(parents=True, exist_ok=True)
             folder_created_by_us = True
@@ -289,7 +295,7 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
                 run_installer(packages, str(install_path), None, False, archive_dest, dry_run=False)
                 
         except Exception as e:
-            # 2. Удаляем папку при ошибке установки, НО только если мы её сами создали
+            # Удаляем папку при ошибке установки, НО только если мы её сами создали
             if folder_created_by_us and install_path.exists():
                 shutil.rmtree(install_path, ignore_errors=True)
             raise e  # Пробрасываем ошибку дальше, чтобы main.py мог её перехватить
@@ -300,6 +306,7 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
             Settings._shared_state['_baseurl'] = old_baseurl
         elif '_baseurl' in Settings._shared_state:
             del Settings._shared_state['_baseurl']
+
         if old_fallbacks is not None:
             Settings._shared_state['_fallbacks'] = old_fallbacks
         elif '_fallbacks' in Settings._shared_state:
@@ -319,23 +326,3 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
             os.unlink(temp_ini.name)
         Settings.configfile = old_configfile
         Settings.load_settings(file=old_configfile)
-    
-    # cmd = [
-    #     sys.executable, "-m", "aqt", "install-qt",
-    #     "-O", config.host_os,
-    #     "linux",            # или windows, mac
-    #     config.platform_host_os,
-    #     config.version,
-    #     config.arch,
-    #     "-m", ",".join(config.modules),
-    #     "--outputdir", str(config.install_path),
-    #     "--base", urls[0]
-    # ]
-    # if len(urls) > 1:
-    #     cmd.extend(["--fallbacks"] + urls[1:])
-
-    # import subprocess
-    
-    # result = subprocess.run(cmd, capture_output=True, text=True)
-    # if result.returncode != 0:
-    #     raise RuntimeError(f"aqt failed: {result.stderr}")
