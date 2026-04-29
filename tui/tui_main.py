@@ -34,6 +34,7 @@ class Aqt_tui_installer(App):
         # -- Нужно для таблицы с модулями --
         self._sort_reverse = False      # Сортировка по увеличению || уменьшения
         self._last_sort_column = None   # Какую колонку сортировали в последний раз
+        self.modules_done = False
         # ----------------------------------
 
     def compose(self) -> ComposeResult:
@@ -164,6 +165,7 @@ class Aqt_tui_installer(App):
                     module_name = row[1]  # вторая колонка
                     selected.append(module_name)
             self.config.modules = selected
+            self.modules_done = True
             self.update_main_settings()
             self._check_and_unlock()
             self._show_main_settings()
@@ -207,7 +209,7 @@ class Aqt_tui_installer(App):
             self.compiler_btn.disabled = False
         if self.config.arch:
             self.modules_btn.disabled = False
-        if self.config.modules:
+        if self.modules_done:
             self.path_btn.disabled = False
         if self.config.install_path:
             self.install_btn.disabled = False
