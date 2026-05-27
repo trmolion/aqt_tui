@@ -16,9 +16,10 @@ from typing import Dict, List, Any
 
 from scan_server.aqt_interface import AqtConfig, get_available_oses, get_available_platform, get_versions_tree_with_config, get_available_architectures, get_available_modules
 from scan_server.check_servers import get_urls_from_config, check_single_server
+from tui.screens import RadioSelectorWidget
 
 class Aqt_tui_installer(App):
-    CSS_PATH = "styles.tcss"
+    CSS_PATH = ["styles.tcss", "screens/radio_selector.tcss"]
 
 
     def __init__(self):
@@ -26,8 +27,8 @@ class Aqt_tui_installer(App):
         self.config = AqtConfig()                   # конфиг, с которого идет скачивание 
         self.current_section = "main"               # указатель этапа, main - главное основное окно со списком всех настроек, в другом случае = event.button.id
         self.available_oses = get_available_oses()  # список возможных ОС
-        self.avaliable_os_platform = []             # список возможных компиляторов под платформу
-        self.install_path = None                    # Выбранный путь установки 
+        self.config_servers_details = []            # результаты проверки серверов
+        self.install_path = None                    # Выбранный путь установки
         self.install_path_label = None              # Надпись - куда устанавливаем
         self.folder_name_input = None
 
@@ -105,28 +106,11 @@ class Aqt_tui_installer(App):
             self.show_more_information_about_config()
         elif event.button.id == "host_os_btn":
             self.show_os_selector()
-        elif event.button.id == "os_done_btn":
-            if self.config.host_os:
-                self.update_main_settings()
-                self._check_and_unlock()
-                self._show_main_settings()
-                self.notify(f"Выбрана ОС: {self.config.host_os}")
-            else:
-                self.notify("Выберите ОС", severity="warning")
-                return
         elif event.button.id == "host_platform_btn":
             self.show_platform_os_selector()
-        elif event.button.id == "platform_os_done_btn":
-            if self.config.platform_host_os:
-                self.update_main_settings()
-                self._check_and_unlock()
-                self._show_main_settings()
-                self.notify(f"Выбрана платформа: {self.config.platform_host_os}")
-            else:
-                self.notify("Выберите платформу ОС", severity="warning")
-                return
         elif event.button.id == "refresh_config_check":
             self.start_config_verification(self.config.config_path)
+            return
         elif event.button.id == "version_btn":
             self.show_version_selector()
         elif event.button.id == "compiler_btn":
@@ -146,7 +130,7 @@ class Aqt_tui_installer(App):
                 self.notify(f"Выбран компилятор: {selected}")
             else:
                 self.notify("Выберите компилятор", severity="warning")
-                return
+            return
         elif event.button.id == "modules_btn":
             self.show_modules_selector()
         elif event.button.id == "select_all_modules":
@@ -170,6 +154,7 @@ class Aqt_tui_installer(App):
             self._check_and_unlock()
             self._show_main_settings()
             self.notify(f"Выбрано модулей: {len(selected)}")
+            return
         elif event.button.id == "path_btn":
             self.select_path_install()
         elif event.button.id == "accept_path_btn":
@@ -190,8 +175,10 @@ class Aqt_tui_installer(App):
             self._check_and_unlock()
             self._show_main_settings()
             self.notify(f"Путь установки: {final_path}")
+            return
         elif event.button.id == "install_btn":
             self.run_installation()
+            return
             
         self.current_section = event.button.id
 
@@ -264,25 +251,10 @@ class Aqt_tui_installer(App):
         container = Vertical(id="progress_container")
         right_panel.mount(container)
         container.mount(Label(message))
-        
-        if pulsing:
-            self.progress_bar = ProgressBar(total=100, show_eta=False)
-            self.progress_bar.advance(50)
-            container.mount(self.progress_bar)
-            self.set_timer(0.1, self._pulse_progress)
-        else:
-            self.progress_bar = ProgressBar(total=total or 100, show_eta=False)
-            container.mount(self.progress_bar)
-
-    def _pulse_progress(self) -> None:
-        """Анимирует пульсацию прогресс-бара."""
-        if hasattr(self, 'progress_bar') and self.progress_bar.total is not None:
-            current = self.progress_bar.progress
-            if current >= 90:
-                self.progress_bar.advance(-80)
-            else:
-                self.progress_bar.advance(10)
-            self.set_timer(0.2, self._pulse_progress)
+        # total=None → Textual рендерит встроенную бегущую анимацию без таймеров
+        bar_total = None if pulsing else (total or 100)
+        self.progress_bar = ProgressBar(total=bar_total, show_eta=False)
+        container.mount(self.progress_bar)
 
 
 
@@ -372,42 +344,37 @@ class Aqt_tui_installer(App):
 
 
 
+    # === Выбор ОС ===
     def show_os_selector(self) -> None:
+        def on_apply(selected: str) -> None:
+            self.config.host_os = selected
+            self.update_main_settings()
+            self._check_and_unlock()
+            self._show_main_settings()
+            self.notify(f"Выбрана ОС: {selected}")
+
         right_panel = self.query_one("#right_panel")
         right_panel.remove_children()
-        buttons = [RadioButton(os_name.capitalize(), id=os_name) for os_name in self.available_oses]
-        radio_set = RadioSet(*buttons, id="os_radio")
-        right_panel.mount(radio_set)
-        done_btn = Button("Применить", id="os_done_btn")
-        right_panel.mount(done_btn)
+        right_panel.mount(RadioSelectorWidget(
+            "Выбор операционной системы", self.available_oses, on_apply, self.config.host_os
+        ))
 
-
-
-    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
-        """Сохраняем выбор на radioButton (id кнопки = имя настройки)"""
-        if event.radio_set.id == "os_radio":
-            self.config.host_os = event.pressed.id
-        elif event.radio_set.id == "os_platform_radio":
-            self.config.platform_host_os = event.pressed.id
-    
-    
-    
     # === Выбор платформы ОС ===
     def show_platform_os_selector(self) -> None:
+        platforms = get_available_platform(self.config.host_os)
+
+        def on_apply(selected: str) -> None:
+            self.config.platform_host_os = selected
+            self.update_main_settings()
+            self._check_and_unlock()
+            self._show_main_settings()
+            self.notify(f"Выбрана платформа: {selected}")
+
         right_panel = self.query_one("#right_panel")
         right_panel.remove_children()
-        self.avaliable_os_platform = get_available_platform(self.config.host_os)
-        buttons = [RadioButton(os_platform_name.capitalize(), id=os_platform_name) for os_platform_name in self.avaliable_os_platform]
-        radio_set = RadioSet(*buttons, id="os_platform_radio")
-        right_panel.mount(radio_set)
-        done_btn = Button("Применить", id="platform_os_done_btn")
-        right_panel.mount(done_btn)
-
-
-
-    def on_radio_set_changed_platform(self, event: RadioSet.Changed) -> None:
-        """Сохраняем выбранную платформу ОС"""
-        self.config.platform_host_os = event.pressed.id
+        right_panel.mount(RadioSelectorWidget(
+            "Выбор платформы", platforms, on_apply, self.config.platform_host_os
+        ))
         
     
     
@@ -432,6 +399,11 @@ class Aqt_tui_installer(App):
             self.notify("Нет доступных серверов для получения версий", severity="warning")
             return
 
+        self.show_progress_indicator("Загрузка версий Qt...", pulsing=True)
+        self._fetch_versions_worker(working_urls)
+
+    @work(thread=True)
+    def _fetch_versions_worker(self, working_urls: List[str]) -> None:
         try:
             tree_dict = get_versions_tree_with_config(
                 working_urls,
@@ -439,12 +411,15 @@ class Aqt_tui_installer(App):
                 self.config.platform_host_os
             )
             if not tree_dict:
-                self.notify("Нет доступных версий для выбранной конфигурации", severity="warning")
+                self.call_from_thread(self.notify, "Нет доступных версий для выбранной конфигурации", severity="warning")
+                self.call_from_thread(self._show_main_settings)
                 return
+            self.call_from_thread(self._render_version_tree, tree_dict)
         except Exception as e:
-            self.notify(f"Ошибка получения версий: {e}", severity="error")
-            return
+            self.call_from_thread(self.notify, f"Ошибка получения версий: {e}", severity="error")
+            self.call_from_thread(self._show_main_settings)
 
+    def _render_version_tree(self, tree_dict: Dict) -> None:
         right_panel = self.query_one("#right_panel")
         right_panel.remove_children()
 
@@ -489,6 +464,11 @@ class Aqt_tui_installer(App):
             self.notify("Нет доступных серверов для получения списка архитектур", severity="warning")
             return
 
+        self.show_progress_indicator("Загрузка архитектур...", pulsing=True)
+        self._fetch_arches_worker(working_urls)
+
+    @work(thread=True)
+    def _fetch_arches_worker(self, working_urls: List[str]) -> None:
         try:
             arches = get_available_architectures(
                 working_urls,
@@ -497,20 +477,29 @@ class Aqt_tui_installer(App):
                 self.config.version
             )
             if not arches:
-                self.notify("Нет доступных архитектур для выбранной версии", severity="warning")
+                self.call_from_thread(self.notify, "Нет доступных архитектур для выбранной версии", severity="warning")
+                self.call_from_thread(self._show_main_settings)
                 return
+            self.call_from_thread(self._render_compiler_selector, arches)
         except Exception as e:
-            self.notify(f"Ошибка получения архитектур: {e}", severity="error")
-            return
+            self.call_from_thread(self.notify, f"Ошибка получения архитектур: {e}", severity="error")
+            self.call_from_thread(self._show_main_settings)
+
+    def _render_compiler_selector(self, arches: List[str]) -> None:
+        def on_apply(selected: str) -> None:
+            self.config.arch = selected
+            self.config.arch = selected
+            self.update_main_settings()
+            self._check_and_unlock()
+            self._show_main_settings()
+            self.notify(f"Выбрана ОС: {selected}")
 
         right_panel = self.query_one("#right_panel")
         right_panel.remove_children()
+        right_panel.mount(RadioSelectorWidget(
+            "Выбор операционной системы", arches, on_apply, self.config.host_os
+        ))
 
-        buttons = [RadioButton(arch, id=arch) for arch in arches]
-        radio_set = RadioSet(*buttons, id="compiler_radio")
-        right_panel.mount(radio_set)
-        done_btn = Button("Применить", id="compiler_done_btn")
-        right_panel.mount(done_btn)
         
         
     def show_modules_selector(self) -> None:
@@ -526,6 +515,11 @@ class Aqt_tui_installer(App):
             self.notify("Нет доступных серверов для получения списка модулей", severity="warning")
             return
 
+        self.show_progress_indicator("Загрузка списка модулей...", pulsing=True)
+        self._fetch_modules_worker(working_urls)
+
+    @work(thread=True)
+    def _fetch_modules_worker(self, working_urls: List[str]) -> None:
         try:
             module_data = get_available_modules(
                 working_urls,
@@ -535,16 +529,18 @@ class Aqt_tui_installer(App):
                 self.config.arch
             )
             if not module_data:
-                self.notify("Нет доступных модулей для выбранной конфигурации", severity="warning")
+                self.call_from_thread(self.notify, "Нет доступных модулей для выбранной конфигурации", severity="warning")
+                self.call_from_thread(self._show_main_settings)
                 return
+            self.call_from_thread(self._render_modules_selector, module_data)
         except Exception as e:
-            self.notify(f"Ошибка получения модулей: {e}", severity="error")
-            return
+            self.call_from_thread(self.notify, f"Ошибка получения модулей: {e}", severity="error")
+            self.call_from_thread(self._show_main_settings)
 
+    def _render_modules_selector(self, module_data) -> None:
         right_panel = self.query_one("#right_panel")
         right_panel.remove_children()
 
-        # Создаём таблицу
         table = DataTable(id="modules_table")
         table.add_columns(
             ("Выбрать", "select"),
@@ -568,11 +564,11 @@ class Aqt_tui_installer(App):
 
         podlojka = ScrollableContainer()
         right_panel.mount(podlojka)
-        
+
         podlojka.mount(table)
         podlojka.mount(select_all_btn)
         podlojka.mount(done_btn)
-        
+
         def sort_key(row_tuple):
             size_str = row_tuple[4]
             return self._parse_size(size_str)
@@ -685,8 +681,9 @@ class Aqt_tui_installer(App):
             json.dump(config_dict, f)
             self.config_json_path = f.name
 
+        worker_path = str(Path(__file__).parent.parent / "install_worker.py")
         self.install_process = subprocess.Popen(
-            [sys.executable, "install_worker.py", self.config_json_path],
+            [sys.executable, worker_path, self.config_json_path],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,

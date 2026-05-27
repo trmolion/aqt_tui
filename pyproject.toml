@@ -16,8 +16,9 @@ dependencies = [
 
 [tool.setuptools]
 # Явно перечисляем пакеты, которые нужно включить
-packages = ["tui", "scan_server"]
+packages = ["tui", "tui.screens", "scan_server"]
 
 [tool.setuptools.package-data]
 tui = ["*.tcss"]
+"tui.screens" = ["*.tcss"]
 scan_server = []

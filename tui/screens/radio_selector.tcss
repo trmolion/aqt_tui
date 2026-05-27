@@ -1,0 +1,31 @@
+RadioSelectorWidget {
+    width: 100%;
+    height: auto;
+    padding: 1;
+}
+
+RadioSelectorWidget .title {
+    text-style: bold;
+    height: 3;
+    content-align: left middle;
+    margin-bottom: 1;
+}
+
+RadioSelectorWidget RadioSet {
+    padding: 0 1;
+}
+
+RadioSelectorWidget RadioButton {
+    padding: 0 2;
+    height: auto;
+}
+
+RadioSelectorWidget Center {
+    width: 100%;
+    margin-top: 1;
+}
+
+RadioSelectorWidget Button#apply_btn {
+    width: 55%;
+    min-width: 20;
+}

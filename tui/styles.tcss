@@ -28,7 +28,7 @@
     padding: 1;
 }
 
-Button {
+#left_panel Button {
     width: 100%;
     margin: 1;
 }
