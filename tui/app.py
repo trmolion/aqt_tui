@@ -1,15 +1,16 @@
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, ScrollableContainer
 from textual.reactive import reactive
-from textual.widgets import (
-    Header, Footer, Button, DirectoryTree, Static,
-    ProgressBar, Label, Checkbox, Input,
-)
+from textual.widgets import Header, Footer, Button, Static
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 from scan_server.aqt_interface import AqtConfig, get_available_oses, get_available_platform
-from tui.screens import RadioSelectorWidget, ConfigWidget, VersionWidget, CompilerWidget, ModulesWidget, ProgressWidget
+from tui.screens import (
+    RadioSelectorWidget,
+    ConfigWidget, VersionWidget, CompilerWidget, ModulesWidget, ProgressWidget, PathWidget,
+    ConfigDetailsWidget,
+)
 
 
 class AqtTuiApp(App):
@@ -32,10 +33,6 @@ class AqtTuiApp(App):
         self._versions_cache: Dict = {}   # (host_os, platform) → tree_dict
         self._arches_cache: Dict = {}     # (host_os, platform, version) → list
         self._modules_cache: Dict = {}    # (host_os, platform, version, arch) → module_data
-
-        self.install_path: Optional[Path] = None
-        self.install_path_label = None
-        self.folder_name_input = None
 
         self.modules_done = False
 
@@ -111,9 +108,6 @@ class AqtTuiApp(App):
             self.show_os_selector()
         elif btn == "host_platform_btn":
             self.show_platform_os_selector()
-        elif btn == "refresh_config_check":
-            self._mount_right(ConfigWidget(self._on_config_done, self.install_config.config_path))
-            return
         elif btn == "version_btn":
             self.show_version_selector()
         elif btn == "compiler_btn":
@@ -121,26 +115,7 @@ class AqtTuiApp(App):
         elif btn == "modules_btn":
             self.show_modules_selector()
         elif btn == "path_btn":
-            self.select_path_install()
-        elif btn == "accept_path_btn":
-            if self.install_path is None:
-                self.notify("Сначала выберите путь в дереве", severity="warning")
-                return
-            make_dir_check = self.query_one("#make_dir_check")
-            if make_dir_check.value:
-                folder_name = self.query_one("#folder_name_input").value.strip()
-                if not folder_name:
-                    self.notify("Введите имя папки", severity="warning")
-                    return
-                final_path = self.install_path / folder_name
-            else:
-                final_path = self.install_path
-            self.install_config.install_path = final_path
-            self.update_main_settings()
-            self._check_and_unlock()
-            self._show_main_settings()
-            self.notify(f"Путь установки: {final_path}")
-            return
+            self._mount_right(PathWidget(self._on_path_done, self.install_config.install_path))
         elif btn == "install_btn":
             self.run_installation()
             return
@@ -197,23 +172,6 @@ class AqtTuiApp(App):
         available = sum(1 for r in server_results if r["status"])
         self.notify(f"Конфиг загружен, доступны {available} из {len(server_results)} серверов")
 
-    def show_progress_indicator(self, message: str, total: int = None, pulsing: bool = False) -> None:
-        right_panel = self.query_one("#right_panel")
-        right_panel.remove_children()
-        container = Vertical(id="progress_container")
-        right_panel.mount(container)
-        container.mount(Label(message))
-        bar_total = None if pulsing else (total or 100)
-        self.progress_bar = ProgressBar(total=bar_total, show_eta=False)
-        container.mount(self.progress_bar)
-
-    def on_directory_tree_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
-        if self.current_section == "path_btn":
-            self.install_path = event.path
-            self.notify(f"Выбран путь: {self.install_path}")
-            if self.install_path_label:
-                self.install_path_label.update(f"Выбран путь: {self.install_path}")
-
     def show_more_information_about_config(self) -> None:
         if not self.install_config.config_path:
             self.notify("Конфиг не выбран", severity="warning")
@@ -222,27 +180,10 @@ class AqtTuiApp(App):
             self.notify("Проверка серверов ещё не завершена", severity="warning")
             return
 
-        right_panel = self.query_one("#right_panel")
-        right_panel.remove_children()
+        def on_refresh() -> None:
+            self._mount_right(ConfigWidget(self._on_config_done, self.install_config.config_path))
 
-        lines = ["[bold]Результаты проверки серверов:[/]", ""]
-        for item in self._server_results:
-            status_icon = "[green]●[/]" if item["status"] else "[red]●[/]"
-            resp_time = item["response_time"]
-            time_str = f"{resp_time:.3f} с" if resp_time is not None else "—"
-            lines += [
-                f"{status_icon} {item['url']}",
-                f"\tВремя ответа: {time_str}",
-                f"\tКод ответа: {item['status_code']}",
-            ]
-            if item["error"]:
-                lines.append(f"   Ошибка: {item['error']}")
-            lines.append("")
-
-        scrl_cnt = ScrollableContainer()
-        right_panel.mount(scrl_cnt)
-        scrl_cnt.mount(Static("\n".join(lines), id="config_details"))
-        scrl_cnt.mount(Button("Обновить проверку", id="refresh_config_check"))
+        self._mount_right(ConfigDetailsWidget(self._server_results, on_refresh))
 
     def _show_main_settings(self) -> None:
         right_panel = self.query_one("#right_panel")
@@ -262,9 +203,7 @@ class AqtTuiApp(App):
             self._show_main_settings()
             self.notify(f"Выбрана ОС: {selected}")
 
-        right_panel = self.query_one("#right_panel")
-        right_panel.remove_children()
-        right_panel.mount(RadioSelectorWidget(
+        self._mount_right(RadioSelectorWidget(
             "Выбор операционной системы", self.available_oses, on_apply,
             self.install_config.host_os,
         ))
@@ -279,9 +218,7 @@ class AqtTuiApp(App):
             self._show_main_settings()
             self.notify(f"Выбрана платформа: {selected}")
 
-        right_panel = self.query_one("#right_panel")
-        right_panel.remove_children()
-        right_panel.mount(RadioSelectorWidget(
+        self._mount_right(RadioSelectorWidget(
             "Выбор платформы", platforms, on_apply, self.install_config.platform_host_os,
         ))
 
@@ -385,38 +322,13 @@ class AqtTuiApp(App):
     # Путь установки
     # =========================================================================
 
-    def select_path_install(self) -> None:
-        right_panel = self.query_one("#right_panel")
-        right_panel.remove_children()
-
-        str_lbl = str(self.install_path) if self.install_path is not None else "Путь не выбран"
-        path_label = Label(str_lbl, id="install_path_label")
-        right_panel.mount(path_label)
-        self.install_path_label = path_label
-
-        make_dir_check = Checkbox("Создавать папку", id="make_dir_check")
-        right_panel.mount(make_dir_check)
-
-        folder_input = Input(placeholder="Имя папки", id="folder_name_input")
-        folder_input.styles.display = "none"
-        right_panel.mount(folder_input)
-        self.folder_name_input = folder_input
-
-        right_panel.mount(Button("Принять путь", id="accept_path_btn"))
-
-        tree = DirectoryTree(Path.home())
-        right_panel.mount(tree)
-        tree.focus()
-
-    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        if event.checkbox.id == "make_dir_check":
-            folder_input = self.query_one("#folder_name_input")
-            if event.value:
-                folder_input.styles.display = "block"
-                folder_input.focus()
-            else:
-                folder_input.styles.display = "none"
-                folder_input.value = ""
+    def _on_path_done(self, path: Optional[Path]) -> None:
+        if path is not None:
+            self.install_config.install_path = path
+            self.update_main_settings()
+            self._check_and_unlock()
+            self.notify(f"Путь установки: {path}")
+        self._show_main_settings()
 
     # =========================================================================
     # Установка
