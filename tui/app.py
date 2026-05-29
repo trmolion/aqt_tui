@@ -1,29 +1,15 @@
-import os
-import queue
-import subprocess
-import json
-import sys
-import tempfile
-import threading
-
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, ScrollableContainer
 from textual.reactive import reactive
 from textual.widgets import (
-    Header, Footer, Button, DirectoryTree, Static, RadioSet, RadioButton,
-    DataTable, ProgressBar, Label, Tree, Checkbox, Input, RichLog,
+    Header, Footer, Button, DirectoryTree, Static,
+    ProgressBar, Label, Checkbox, Input,
 )
-from textual.coordinate import Coordinate
-from textual import work
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-from scan_server.aqt_interface import (
-    AqtConfig, get_available_oses, get_available_platform,
-    get_versions_tree_with_config, get_available_architectures, get_available_modules,
-)
-from scan_server.check_servers import get_urls_from_config, check_single_server
-from tui.screens import RadioSelectorWidget
+from scan_server.aqt_interface import AqtConfig, get_available_oses, get_available_platform
+from tui.screens import RadioSelectorWidget, ConfigWidget, VersionWidget, CompilerWidget, ModulesWidget, ProgressWidget
 
 
 class AqtTuiApp(App):
@@ -51,8 +37,6 @@ class AqtTuiApp(App):
         self.install_path_label = None
         self.folder_name_input = None
 
-        self._sort_reverse = False
-        self._last_sort_column = None
         self.modules_done = False
 
     # =========================================================================
@@ -128,51 +112,14 @@ class AqtTuiApp(App):
         elif btn == "host_platform_btn":
             self.show_platform_os_selector()
         elif btn == "refresh_config_check":
-            self.start_config_verification(self.install_config.config_path)
+            self._mount_right(ConfigWidget(self._on_config_done, self.install_config.config_path))
             return
         elif btn == "version_btn":
             self.show_version_selector()
         elif btn == "compiler_btn":
             self.show_compiler_selector()
-        elif btn == "compiler_done_btn":
-            radio_set = self.query_one("#compiler_radio")
-            selected = None
-            for rb in radio_set.query(RadioButton):
-                if rb.value:
-                    selected = rb.id
-                    break
-            if selected:
-                self.install_config.arch = selected
-                self.update_main_settings()
-                self._check_and_unlock()
-                self._show_main_settings()
-                self.notify(f"Выбран компилятор: {selected}")
-            else:
-                self.notify("Выберите компилятор", severity="warning")
-            return
         elif btn == "modules_btn":
             self.show_modules_selector()
-        elif btn == "select_all_modules":
-            table = self.query_one("#modules_table")
-            col_index = table.get_column_index("select")
-            for row_index in range(len(table.rows)):
-                table.update_cell_at(Coordinate(row_index, col_index), "☑")
-            return
-        elif btn == "modules_done_btn":
-            table = self.query_one("#modules_table")
-            col_index = table.get_column_index("select")
-            selected = [
-                table.get_row(row_key)[1]
-                for row_index, row_key in enumerate(table.rows)
-                if table.get_row(row_key)[col_index] == "☑"
-            ]
-            self.install_config.modules = selected
-            self.modules_done = True
-            self.update_main_settings()
-            self._check_and_unlock()
-            self._show_main_settings()
-            self.notify(f"Выбрано модулей: {len(selected)}")
-            return
         elif btn == "path_btn":
             self.select_path_install()
         elif btn == "accept_path_btn":
@@ -226,37 +173,29 @@ class AqtTuiApp(App):
     # Конфиг
     # =========================================================================
 
-    def show_file_picker(self) -> None:
+    def _mount_right(self, widget) -> None:
         right_panel = self.query_one("#right_panel")
         right_panel.remove_children()
-        tree = DirectoryTree(Path.home())
-        right_panel.mount(tree)
-        tree.focus()
+        right_panel.mount(widget)
 
-    def start_config_verification(self, config_path: Path) -> None:
+    def show_file_picker(self) -> None:
+        self._mount_right(ConfigWidget(self._on_config_done))
+
+    def _on_config_done(self, result) -> None:
+        if result is None:
+            self._show_main_settings()
+            return
+        config_path, server_results = result
         self.install_config.config_path = config_path
-        urls = get_urls_from_config(config_path)
-        self.show_progress_indicator("Проверка серверов...", total=len(urls))
-        self.verify_config_worker(urls, config_path)
-        self.config_btn.disabled = True
-
-    @work(thread=True)
-    def verify_config_worker(self, urls, config_path: Path) -> None:
-        total = len(urls)
-        results = []
-        for i, url in enumerate(urls):
-            result = check_single_server(url)
-            results.append(result)
-            self.call_from_thread(self.update_progress, i + 1, total, url)
-        self.call_from_thread(self.on_config_verification_done, results)
-
-    def update_progress(self, current: int, total: int, current_url: str = None) -> None:
-        if hasattr(self, "progress_bar"):
-            self.progress_bar.update(progress=current, total=total)
-        if current_url:
-            self.query_one("#progress_container Label").update(
-                f"Проверка серверов... ({current}/{total})   Сервер: {current_url}"
-            )
+        self._server_results = server_results
+        self._versions_cache.clear()
+        self._arches_cache.clear()
+        self._modules_cache.clear()
+        self.update_main_settings()
+        self._check_and_unlock()
+        self._show_main_settings()
+        available = sum(1 for r in server_results if r["status"])
+        self.notify(f"Конфиг загружен, доступны {available} из {len(server_results)} серверов")
 
     def show_progress_indicator(self, message: str, total: int = None, pulsing: bool = False) -> None:
         right_panel = self.query_one("#right_panel")
@@ -267,34 +206,6 @@ class AqtTuiApp(App):
         bar_total = None if pulsing else (total or 100)
         self.progress_bar = ProgressBar(total=bar_total, show_eta=False)
         container.mount(self.progress_bar)
-
-    def on_config_verification_done(self, results: List[Dict[str, Any]]) -> None:
-        self._server_results = results
-        # Сбрасываем кеш метаданных при смене конфига
-        self._versions_cache.clear()
-        self._arches_cache.clear()
-        self._modules_cache.clear()
-
-        any_ok = any(r["status"] for r in results)
-        if any_ok:
-            self.update_main_settings()
-            self._check_and_unlock()
-            self._show_main_settings()
-            available = sum(1 for r in results if r["status"])
-            self.notify(f"Конфиг загружен, доступны {available} из {len(results)} серверов")
-        else:
-            self.install_config.config_path = None
-            self._show_main_settings()
-            self.notify("Не удалось подключиться ни к одному серверу", severity="error")
-        self.config_btn.disabled = False
-
-    def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
-        if self.current_section == "config_btn":
-            path = event.path
-            if path.suffix == ".ini":
-                self.start_config_verification(path)
-            else:
-                self.notify("Выберите файл .ini", severity="warning")
 
     def on_directory_tree_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
         if self.current_section == "path_btn":
@@ -390,62 +301,22 @@ class AqtTuiApp(App):
             self.notify("Сначала выберите ОС и платформу", severity="warning")
             return
 
-        cache_key = (c.host_os, c.platform_host_os)
-        if cache_key in self._versions_cache:
-            self._render_version_tree(self._versions_cache[cache_key])
-            return
-
         working_urls = self.get_working_urls()
         if not working_urls:
             self.notify("Нет доступных серверов для получения версий", severity="warning")
             return
 
-        self.show_progress_indicator("Загрузка версий Qt...", pulsing=True)
-        self._fetch_versions_worker(working_urls)
+        cached = self._versions_cache.get((c.host_os, c.platform_host_os))
+        self._mount_right(VersionWidget(working_urls, c.host_os, c.platform_host_os,
+                                        self._on_version_done, cached_tree=cached))
 
-    @work(thread=True)
-    def _fetch_versions_worker(self, working_urls: List[str]) -> None:
-        c = self.install_config
-        try:
-            tree_dict = get_versions_tree_with_config(working_urls, c.host_os, c.platform_host_os)
-            if not tree_dict:
-                self.call_from_thread(
-                    self.notify, "Нет доступных версий для выбранной конфигурации", severity="warning"
-                )
-                self.call_from_thread(self._show_main_settings)
-                return
-            self._versions_cache[(c.host_os, c.platform_host_os)] = tree_dict
-            self.call_from_thread(self._render_version_tree, tree_dict)
-        except Exception as e:
-            self.call_from_thread(self.notify, f"Ошибка получения версий: {e}", severity="error")
-            self.call_from_thread(self._show_main_settings)
-
-    def _render_version_tree(self, tree_dict: Dict) -> None:
-        right_panel = self.query_one("#right_panel")
-        right_panel.remove_children()
-
-        tree = Tree("Доступные версии Qt", id="version_tree")
-        tree.root.expand()
-        for major, versions in sorted(tree_dict.items(), reverse=True):
-            node = tree.root.add(str(major), expand=True)
-            for version in versions:
-                node.add_leaf(version)
-
-        right_panel.mount(tree)
-        tree.focus()
-
-    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
-        if event.node.is_root:
-            return
-        if not event.node.children:
-            selected_version = event.node.label.plain
-            self.install_config.version = selected_version
+    def _on_version_done(self, version: Optional[str]) -> None:
+        if version is not None:
+            self.install_config.version = version
             self.update_main_settings()
             self._check_and_unlock()
-            self._show_main_settings()
-            self.notify(f"Выбрана версия Qt: {selected_version}")
-        else:
-            event.node.toggle()
+            self.notify(f"Выбрана версия Qt: {version}")
+        self._show_main_settings()
 
     # =========================================================================
     # Компилятор / Архитектура
@@ -460,49 +331,23 @@ class AqtTuiApp(App):
             self.notify("Сначала выберите ОС, платформу и версию", severity="warning")
             return
 
-        cache_key = (c.host_os, c.platform_host_os, c.version)
-        if cache_key in self._arches_cache:
-            self._render_compiler_selector(self._arches_cache[cache_key])
-            return
-
         working_urls = self.get_working_urls()
         if not working_urls:
             self.notify("Нет доступных серверов для получения списка архитектур", severity="warning")
             return
 
-        self.show_progress_indicator("Загрузка архитектур...", pulsing=True)
-        self._fetch_arches_worker(working_urls)
+        cached = self._arches_cache.get((c.host_os, c.platform_host_os, c.version))
+        self._mount_right(CompilerWidget(working_urls, c.host_os, c.platform_host_os, c.version,
+                                         self._on_compiler_done, cached_arches=cached,
+                                         current_arch=c.arch))
 
-    @work(thread=True)
-    def _fetch_arches_worker(self, working_urls: List[str]) -> None:
-        c = self.install_config
-        try:
-            arches = get_available_architectures(working_urls, c.host_os, c.platform_host_os, c.version)
-            if not arches:
-                self.call_from_thread(
-                    self.notify, "Нет доступных архитектур для выбранной версии", severity="warning"
-                )
-                self.call_from_thread(self._show_main_settings)
-                return
-            self._arches_cache[(c.host_os, c.platform_host_os, c.version)] = arches
-            self.call_from_thread(self._render_compiler_selector, arches)
-        except Exception as e:
-            self.call_from_thread(self.notify, f"Ошибка получения архитектур: {e}", severity="error")
-            self.call_from_thread(self._show_main_settings)
-
-    def _render_compiler_selector(self, arches: List[str]) -> None:
-        def on_apply(selected: str) -> None:
-            self.install_config.arch = selected
+    def _on_compiler_done(self, arch: Optional[str]) -> None:
+        if arch is not None:
+            self.install_config.arch = arch
             self.update_main_settings()
             self._check_and_unlock()
-            self._show_main_settings()
-            self.notify(f"Выбран компилятор: {selected}")
-
-        right_panel = self.query_one("#right_panel")
-        right_panel.remove_children()
-        right_panel.mount(RadioSelectorWidget(
-            "Выбор компилятора/архитектуры", arches, on_apply, self.install_config.arch,
-        ))
+            self.notify(f"Выбран компилятор: {arch}")
+        self._show_main_settings()
 
     # =========================================================================
     # Модули
@@ -517,100 +362,24 @@ class AqtTuiApp(App):
             self.notify("Сначала выберите ОС, платформу, версию и компилятор", severity="warning")
             return
 
-        cache_key = (c.host_os, c.platform_host_os, c.version, c.arch)
-        if cache_key in self._modules_cache:
-            self._render_modules_selector(self._modules_cache[cache_key])
-            return
-
         working_urls = self.get_working_urls()
         if not working_urls:
             self.notify("Нет доступных серверов для получения списка модулей", severity="warning")
             return
 
-        self.show_progress_indicator("Загрузка списка модулей...", pulsing=True)
-        self._fetch_modules_worker(working_urls)
+        cached = self._modules_cache.get((c.host_os, c.platform_host_os, c.version, c.arch))
+        self._mount_right(ModulesWidget(working_urls, c.host_os, c.platform_host_os, c.version,
+                                        c.arch, self._on_modules_done, cached_modules=cached,
+                                        current_modules=c.modules))
 
-    @work(thread=True)
-    def _fetch_modules_worker(self, working_urls: List[str]) -> None:
-        c = self.install_config
-        try:
-            module_data = get_available_modules(
-                working_urls, c.host_os, c.platform_host_os, c.version, c.arch
-            )
-            if not module_data:
-                self.call_from_thread(
-                    self.notify, "Нет доступных модулей для выбранной конфигурации", severity="warning"
-                )
-                self.call_from_thread(self._show_main_settings)
-                return
-            self._modules_cache[(c.host_os, c.platform_host_os, c.version, c.arch)] = module_data
-            self.call_from_thread(self._render_modules_selector, module_data)
-        except Exception as e:
-            self.call_from_thread(self.notify, f"Ошибка получения модулей: {e}", severity="error")
-            self.call_from_thread(self._show_main_settings)
-
-    def _render_modules_selector(self, module_data) -> None:
-        right_panel = self.query_one("#right_panel")
-        right_panel.remove_children()
-
-        table = DataTable(id="modules_table")
-        table.add_columns(
-            ("Выбрать", "select"),
-            ("Модуль", "module"),
-            ("Описание", "description"),
-            ("Дата релиза", "release_date"),
-            ("Размер загрузки", "compressed_size"),
-            ("Размер установки", "uncompressed_size"),
-        )
-        table.cursor_type = "row"
-
-        for module_name, info in module_data.table_data.items():
-            table.add_row(
-                "☐", module_name,
-                info.get("DisplayName", ""),
-                info.get("ReleaseDate", ""),
-                info.get("CompressedSize", ""),
-                info.get("UncompressedSize", ""),
-                key=module_name,
-            )
-
-        podlojka = ScrollableContainer()
-        right_panel.mount(podlojka)
-        podlojka.mount(table)
-        podlojka.mount(Button("Выбрать всё", id="select_all_modules"))
-        podlojka.mount(Button("Применить", id="modules_done_btn"))
-
-        table.sort(key=lambda row: self._parse_size(row[4]), reverse=True)
-        table.focus()
-
-    def on_data_table_row_selected(self, event: DataTable.CellSelected) -> None:
-        if event.data_table.id == "modules_table":
-            table = event.data_table
-            row_index = event.cursor_row
-            col_index = table.get_column_index("select")
-            current = table.get_row_at(row_index)[col_index]
-            table.update_cell_at(Coordinate(row_index, col_index), "☑" if current == "☐" else "☐")
-
-    def _parse_size(self, size_str: str) -> float:
-        if not size_str:
-            return 0.0
-        size_str = size_str.strip().upper()
-        multipliers = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
-        if size_str[-1] in multipliers:
-            return float(size_str[:-1]) * multipliers[size_str[-1]]
-        return float(size_str)
-
-    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        if event.data_table.id != "modules_table":
-            return
-        column_key = event.column_key
-        if column_key in ("compressed_size", "uncompressed_size"):
-            if self._last_sort_column == column_key:
-                self._sort_reverse = not self._sort_reverse
-            else:
-                self._sort_reverse = False
-            self._last_sort_column = column_key
-            event.data_table.sort(column_key, key=self._parse_size, reverse=self._sort_reverse)
+    def _on_modules_done(self, modules: Optional[List[str]]) -> None:
+        if modules is not None:
+            self.install_config.modules = modules
+            self.modules_done = True
+            self.update_main_settings()
+            self._check_and_unlock()
+            self.notify(f"Выбрано модулей: {len(modules)}")
+        self._show_main_settings()
 
     # =========================================================================
     # Путь установки
@@ -658,8 +427,6 @@ class AqtTuiApp(App):
             self.notify("Не все параметры выбраны", severity="warning")
             return
 
-        self.setup_logging_ui()
-
         c = self.install_config
         config_dict = {
             "config_path": str(c.config_path) if c.config_path else None,
@@ -671,112 +438,8 @@ class AqtTuiApp(App):
             "install_path": str(c.install_path) if c.install_path else None,
             "working_urls": self.get_working_urls(),
         }
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(config_dict, f)
-            self.config_json_path = f.name
-
         worker_path = str(Path(__file__).parent.parent / "install_worker.py")
-        self.install_process = subprocess.Popen(
-            [sys.executable, worker_path, self.config_json_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True,
-            bufsize=1,
-            start_new_session=True,
-        )
+        self._mount_right(ProgressWidget(config_dict, worker_path, self._on_install_done))
 
-        self.log_queue = queue.Queue()
-        self.stop_reading = False
-
-        self.reader_thread = threading.Thread(target=self._read_process_output, daemon=True)
-        self.reader_thread.start()
-
-        self._log_timer = self.set_interval(0.05, self._process_log_queue)
-        self._completion_timer = self.set_interval(0.2, self._check_process_completion)
-
-    def _read_process_output(self):
-        try:
-            for line in iter(self.install_process.stdout.readline, ""):
-                if self.stop_reading:
-                    break
-                self.log_queue.put(line)
-        except Exception as e:
-            self.log_queue.put(f"ERROR reading output: {e}\n")
-        finally:
-            self.log_queue.put(None)
-
-    def _process_log_queue(self):
-        try:
-            while True:
-                line = self.log_queue.get_nowait()
-                if line is None:
-                    self._log_timer.stop()
-                    break
-                self._handle_log_line(line)
-        except queue.Empty:
-            pass
-
-    def _handle_log_line(self, line: str):
-        clean = line.strip()
-        if not clean:
-            return
-        self.rich_log.write(clean)
-        if "Downloading" in clean or "Extracting" in clean or "Finished" in clean:
-            if hasattr(self, "install_progress") and self.install_progress.total:
-                if self.install_progress.progress < self.install_progress.total:
-                    self.install_progress.advance(1)
-        if "===TOTAL_PACKAGES:" in clean:
-            try:
-                total_pkgs = int(clean.split(":")[1].replace("===", ""))
-                self.install_progress.total = total_pkgs * 2
-                self.install_progress.update(progress=0)
-            except ValueError:
-                pass
-
-    def _check_process_completion(self):
-        if self.install_process.poll() is not None:
-            self._completion_timer.stop()
-            self.set_timer(0.5, self._finish_installation)
-
-    def _finish_installation(self):
-        self.stop_reading = True
-        if hasattr(self, "_log_timer"):
-            self._log_timer.stop()
-        if self.reader_thread.is_alive():
-            self.reader_thread.join(timeout=1.0)
-        self.install_process.stdout.close()
-        exit_code = self.install_process.wait()
-        try:
-            os.unlink(self.config_json_path)
-        except OSError:
-            pass
-        self.on_installation_done(exit_code == 0, None if exit_code == 0 else f"Процесс завершился с кодом {exit_code}")
-
-    def setup_logging_ui(self) -> None:
-        right_panel = self.query_one("#right_panel")
-        right_panel.remove_children()
-
-        self.install_progress = ProgressBar(total=100, show_eta=True)
-        self.rich_log = RichLog(highlight=True, markup=False, wrap=True)
-
-        right_panel.mount(
-            Label("Установка Qt... ", classes="title-label"),
-            self.install_progress,
-            self.rich_log,
-        )
-
-    def on_installation_done(self, success: bool, error_msg: str = None) -> None:
-        if hasattr(self, "_log_timer"):
-            self._log_timer.stop()
-        if hasattr(self, "_completion_timer"):
-            self._completion_timer.stop()
-
-        if success:
-            self.rich_log.write("\n[green]Установка успешно завершена![/]")
-            self.notify("Установка Qt завершена успешно", severity="information")
-        else:
-            self.rich_log.write(f"\n[red]Ошибка установки: {error_msg}[/]")
-            self.notify(f"Ошибка установки: {error_msg}", severity="error")
-
-        self.set_timer(5.0, self._show_main_settings)
+    def _on_install_done(self, _success: bool) -> None:
+        self._show_main_settings()
