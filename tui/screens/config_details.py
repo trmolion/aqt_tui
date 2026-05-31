@@ -1,7 +1,7 @@
 from typing import Any, Callable, Dict, List
 
 from textual.app import ComposeResult
-from textual.containers import ScrollableContainer
+from textual.containers import ScrollableContainer, Center
 from textual.widget import Widget
 from textual.widgets import Button, Static
 
@@ -9,7 +9,11 @@ from textual.widgets import Button, Static
 class ConfigDetailsWidget(Widget):
     """Виджет деталей проверки серверов конфига."""
 
-    DEFAULT_CSS = "ConfigDetailsWidget { height: 100%; }"
+    DEFAULT_CSS = """
+    ConfigDetailsWidget { height: 100%; }
+    ConfigDetailsWidget Center { width: 100%; margin-top: 1; }
+    ConfigDetailsWidget Button#refresh_config_check { width: 55%; min-width: 20; }
+    """
 
     def __init__(
         self,
@@ -36,7 +40,7 @@ class ConfigDetailsWidget(Widget):
             lines.append("")
         with ScrollableContainer():
             yield Static("\n".join(lines), id="config_details")
-            yield Button("Обновить проверку", id="refresh_config_check")
+            yield Center(Button("Обновить проверку", id="refresh_config_check", variant="primary"))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "refresh_config_check":

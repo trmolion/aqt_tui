@@ -122,6 +122,26 @@ class ProgressWidget(Widget):
             self._completion_timer.stop()
             self.set_timer(0.5, self._finish_installation)
 
+    def on_unmount(self) -> None:
+        self._stop_reading = True
+        if self._log_timer:
+            self._log_timer.stop()
+        if self._completion_timer:
+            self._completion_timer.stop()
+        if self._install_process and self._install_process.poll() is None:
+            self._install_process.terminate()
+            try:
+                self._install_process.wait(timeout=3)
+                self.app.notify("Установка прервана", severity="warning")
+            except subprocess.TimeoutExpired:
+                self._install_process.kill()
+                self.app.notify("Установка принудительно остановлена", severity="error")
+        if self._config_json_path:
+            try:
+                os.unlink(self._config_json_path)
+            except OSError:
+                pass
+
     def _finish_installation(self) -> None:
         self._stop_reading = True
         if self._log_timer:

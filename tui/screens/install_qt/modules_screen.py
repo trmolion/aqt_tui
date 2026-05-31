@@ -2,7 +2,7 @@ from typing import Callable, List, Optional
 
 from textual import work
 from textual.app import ComposeResult
-from textual.containers import ScrollableContainer, Vertical
+from textual.containers import ScrollableContainer, Vertical, Center
 from textual.coordinate import Coordinate
 from textual.widget import Widget
 from textual.widgets import Button, DataTable, Label, ProgressBar
@@ -13,8 +13,11 @@ from scan_server.aqt_interface import get_available_modules
 class ModulesWidget(Widget):
     """Виджет выбора модулей Qt. Монтируется в right_panel."""
 
-    DEFAULT_CSS = "ModulesWidget { height: 100%; }"
-
+    DEFAULT_CSS = """
+        ModulesWidget { height: 100%; }
+        ModulesWidget Center { width: 100%; margin-top: 1; }
+        ModulesWidget Button { width: 55%; min-width: 20; }
+    """
     def __init__(
         self,
         working_urls: List[str],
@@ -89,8 +92,8 @@ class ModulesWidget(Widget):
         wrapper = ScrollableContainer()
         content.mount(wrapper)
         wrapper.mount(table)
-        wrapper.mount(Button("Выбрать всё", id="select_all_modules"))
-        wrapper.mount(Button("Применить", id="modules_done_btn"))
+        wrapper.mount(Center(Button("Выбрать всё", id="select_all_modules", variant="primary")))
+        wrapper.mount(Center(Button("Применить", id="modules_done_btn", variant="success")))
 
         table.sort(key=lambda row: self._parse_size(row[4]), reverse=True)
         table.focus()
