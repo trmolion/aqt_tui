@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Callable, List, Optional
 
 from textual import work
@@ -24,6 +25,7 @@ class CompilerWidget(Widget):
         on_done: Callable[[Optional[str]], None],
         cached_arches: Optional[List[str]] = None,
         current_arch: Optional[str] = None,
+        config_path: Optional[Path] = None,
     ) -> None:
         super().__init__()
         self._working_urls = working_urls
@@ -33,6 +35,7 @@ class CompilerWidget(Widget):
         self._on_done = on_done
         self._cached_arches = cached_arches
         self._current_arch = current_arch
+        self._config_path = config_path
 
     def compose(self) -> ComposeResult:
         yield Vertical(id="compiler_content")
@@ -74,7 +77,7 @@ class CompilerWidget(Widget):
     def _fetch_worker(self, working_urls: List[str]) -> None:
         try:
             arches = get_available_architectures(
-                working_urls, self._host_os, self._platform, self._version
+                working_urls, self._host_os, self._platform, self._version, self._config_path
             )
             if not arches:
                 self.app.call_from_thread(

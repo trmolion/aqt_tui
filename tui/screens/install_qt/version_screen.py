@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from textual import work
@@ -21,6 +22,7 @@ class VersionWidget(Widget):
         platform: str,
         on_done: Callable[[Optional[str]], None],
         cached_tree: Optional[Dict] = None,
+        config_path: Optional[Path] = None,
     ) -> None:
         super().__init__()
         self._working_urls = working_urls
@@ -28,6 +30,7 @@ class VersionWidget(Widget):
         self._platform = platform
         self._on_done = on_done
         self._cached_tree = cached_tree
+        self._config_path = config_path
 
     def compose(self) -> ComposeResult:
         yield Vertical(id="version_content")
@@ -70,7 +73,9 @@ class VersionWidget(Widget):
     @work(thread=True)
     def _fetch_worker(self, working_urls: List[str]) -> None:
         try:
-            tree_dict = get_versions_tree_with_config(working_urls, self._host_os, self._platform)
+            tree_dict = get_versions_tree_with_config(
+                working_urls, self._host_os, self._platform, self._config_path
+            )
             if not tree_dict:
                 self.app.call_from_thread(
                     self.notify, "Нет доступных версий для выбранной конфигурации", severity="warning"

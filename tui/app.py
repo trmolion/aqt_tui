@@ -245,7 +245,8 @@ class AqtTuiApp(App):
 
         cached = self._versions_cache.get((c.host_os, c.platform_host_os))
         self._mount_right(VersionWidget(working_urls, c.host_os, c.platform_host_os,
-                                        self._on_version_done, cached_tree=cached))
+                                        self._on_version_done, cached_tree=cached,
+                                        config_path=c.config_path))
 
     def _on_version_done(self, version: Optional[str]) -> None:
         if version is not None:
@@ -276,7 +277,7 @@ class AqtTuiApp(App):
         cached = self._arches_cache.get((c.host_os, c.platform_host_os, c.version))
         self._mount_right(CompilerWidget(working_urls, c.host_os, c.platform_host_os, c.version,
                                          self._on_compiler_done, cached_arches=cached,
-                                         current_arch=c.arch))
+                                         current_arch=c.arch, config_path=c.config_path))
 
     def _on_compiler_done(self, arch: Optional[str]) -> None:
         if arch is not None:
@@ -307,7 +308,8 @@ class AqtTuiApp(App):
         cached = self._modules_cache.get((c.host_os, c.platform_host_os, c.version, c.arch))
         self._mount_right(ModulesWidget(working_urls, c.host_os, c.platform_host_os, c.version,
                                         c.arch, self._on_modules_done, cached_modules=cached,
-                                        current_modules=c.modules))
+                                        current_modules=c.modules,
+                                        config_path=c.config_path))
 
     def _on_modules_done(self, modules: Optional[List[str]]) -> None:
         if modules is not None:

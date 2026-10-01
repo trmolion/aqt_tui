@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Callable, List, Optional
 
 from textual import work
@@ -28,6 +29,7 @@ class ModulesWidget(Widget):
         on_done: Callable[[Optional[List[str]]], None],
         cached_modules=None,
         current_modules: Optional[List[str]] = None,
+        config_path: Optional[Path] = None,
     ) -> None:
         super().__init__()
         self._working_urls = working_urls
@@ -38,6 +40,7 @@ class ModulesWidget(Widget):
         self._on_done = on_done
         self._cached_modules = cached_modules
         self._current_modules = current_modules or []
+        self._config_path = config_path
         self._sort_reverse = False
         self._last_sort_column = None
 
@@ -106,7 +109,8 @@ class ModulesWidget(Widget):
     def _fetch_worker(self, working_urls: List[str]) -> None:
         try:
             module_data = get_available_modules(
-                working_urls, self._host_os, self._platform, self._version, self._arch
+                working_urls, self._host_os, self._platform, self._version, self._arch,
+                self._config_path,
             )
             if not module_data:
                 self.app.call_from_thread(
