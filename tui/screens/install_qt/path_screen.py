@@ -2,8 +2,9 @@ import re
 from pathlib import Path
 from typing import Callable, Optional
 
-from textual.containers import Center
+from textual.containers import Horizontal
 from textual.app import ComposeResult
+from textual.markup import escape
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, DirectoryTree, Input, Label
 
@@ -16,14 +17,14 @@ class PathWidget(Widget):
 
     DEFAULT_CSS = """
     PathWidget { height: 100%; }
-    PathWidget Center { width: 100%; margin-top: 1; }
-    PathWidget Button { width: 55%; min-width: 20; margin: 1 0;}
+    PathWidget #path_actions { height: auto; align: center middle; margin-top: 1; }
+    PathWidget #accept_path_btn { width: 55%; min-width: 20; margin: 0; }
+    PathWidget #make_dir_check { margin-left: 2; }
     PathWidget #install_path_label {
         width: 100%;
         content-align: center middle;
         text-style: bold;
-        margin: 1 0;
-        padding: 1 0;
+        margin: 1 0 0 0;
     }
     """
 
@@ -37,10 +38,10 @@ class PathWidget(Widget):
         self._selected_path: Optional[Path] = current_path
 
     def compose(self) -> ComposeResult:
-        label_text = str(self._selected_path) if self._selected_path else "Путь не выбран"
-        yield Label(label_text, id="install_path_label")
-        yield Center(Button("Принять путь", id="accept_path_btn", variant="success"))
-        yield Checkbox("Создавать папку", id="make_dir_check")
+        yield Label(self._path_markup(self._selected_path), id="install_path_label")
+        with Horizontal(id="path_actions"):
+            yield Button("Принять путь", id="accept_path_btn", variant="success")
+            yield Checkbox("Создать папку", id="make_dir_check")
         yield Input(placeholder="Имя папки", id="folder_name_input")
         yield DirectoryTree(Path.home())
 
@@ -51,7 +52,13 @@ class PathWidget(Widget):
     def on_directory_tree_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
         event.stop()
         self._selected_path = event.path
-        self.query_one("#install_path_label", Label).update(f"Выбран путь: {event.path}")
+        self.query_one("#install_path_label", Label).update(self._path_markup(event.path))
+
+    @staticmethod
+    def _path_markup(path: Optional[Path]) -> str:
+        if path is None:
+            return "Путь: [dim]не выбран[/]"
+        return f"Путь: [$accent]{escape(str(path))}[/]"
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         event.stop()

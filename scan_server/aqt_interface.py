@@ -7,13 +7,15 @@ import tempfile
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import aqt
-from aqt.archives import QtArchives
-from aqt.helper import MyConfigParser, Settings
-from aqt.installer import run_installer
+from aqt.archives import QtArchives, QtPackage, SrcDocExamplesArchives, ToolArchives
+from aqt.exceptions import ArchiveDownloadError
+from aqt.helper import MyConfigParser, Settings, retry_on_bad_connection
+from aqt.installer import Cli, run_installer
 from aqt.metadata import ArchiveId, MetadataFactory, Version, ModuleData
+from aqt.updater import Updater
 
 
 # settings.ini, который aqt читает по умолчанию
@@ -22,6 +24,23 @@ _AQT_DEFAULT_INI = Path(aqt.__file__).parent / "settings.ini"
 # Settings в aqt — глобальный объект (Borg). Воркеры TUI работают в разных потоках,
 # поэтому подменять его конфиг можно только по очереди.
 _settings_lock = threading.Lock()
+
+# Инструменты, которые можно выбрать в разделе «Инструменты»: имя в репозитории → название
+TOOLS: Dict[str, str] = {
+    "tools_qtcreator_gui": "Qt Creator",
+    "tools_cmake": "CMake",
+    "tools_ninja": "Ninja",
+    "tools_conan": "Conan",
+    "tools_ifw": "Qt Installer Framework",
+}
+
+# Смена поля сбрасывает поля, которые от него зависят
+_DEPENDENTS: Dict[str, Tuple[str, ...]] = {
+    "host_os": ("platform_host_os", "version", "arch", "modules", "doc_modules", "example_modules", "tools"),
+    "platform_host_os": ("version", "arch", "modules", "doc_modules", "example_modules"),
+    "version": ("arch", "modules", "doc_modules", "example_modules"),
+    "arch": ("modules",),
+}
 
 
 class AqtConfig:
@@ -32,19 +51,20 @@ class AqtConfig:
         self.platform_host_os: Optional[str] = None # под какой компилятор Qt
         self.version: Optional[str] = None          # версия qt
         self.arch: Optional[str] = None             # компилятор, архитектура
-        self.modules: List[str] = []                # список модулей
         self.install_path: Optional[Path] = None    # путь установки qt
+        # Списки: None — шаг ещё не пройден, [] — пройден, ничего не выбрано
+        self.modules: Optional[List[str]] = None          # модули Qt
+        self.doc_modules: Optional[List[str]] = None      # модули документации
+        self.example_modules: Optional[List[str]] = None  # модули примеров
+        self.tools: Optional[List[Tuple[str, str]]] = None  # (имя инструмента, вариант)
 
-    def is_valid(self) -> bool:
-        """Проверяет, заполнены ли все обязательные поля."""
-        return all([
-            self.config_path,
-            self.host_os,
-            self.platform_host_os,
-            self.version,
-            self.arch,
-            self.install_path
-        ])
+    def set(self, field: str, value: Any) -> None:
+        """Меняет поле; если значение другое — сбрасывает зависящие от него поля."""
+        if getattr(self, field) == value:
+            return
+        setattr(self, field, value)
+        for dependent in _DEPENDENTS.get(field, ()):
+            setattr(self, dependent, None)
 
 
 # =============================================================================
@@ -158,13 +178,120 @@ def get_available_modules(
         return meta.fetch_long_modules(version_obj, arch)
 
 
+def _sde_location(host_os: str, version: str) -> Tuple[str, str]:
+    """Где лежат документация и примеры: для Qt >= 6.7 — в общем разделе all_os/qt (как в aqt)."""
+    if Version(version) >= Version("6.7.0"):
+        return "all_os", "qt"
+    return host_os, "desktop"
+
+
+def get_sde_modules(
+    urls: List[str], host_os: str, version: str, flavor: str, config_path: Optional[Path] = None,
+) -> List[str]:
+    """Возвращает модули документации (flavor="doc") или примеров (flavor="examples") для версии Qt."""
+    os_name, target = _sde_location(host_os, version)
+    with _aqt_settings(urls, config_path):
+        meta = MetadataFactory(ArchiveId("qt", os_name, target), base_url=urls[0])
+        return sorted(meta.fetch_modules_sde(flavor, Version(version)))
+
+
+def _main_tool_variant(tool_name: str, listing: Dict[str, Dict[str, str]]) -> Optional[str]:
+    """
+    Основной вариант инструмента. Без явного варианта aqt ставит все сразу —
+    для Qt Creator это ещё исходники, телеметрия и отладочные символы.
+    """
+    preferred = "qt.tools." + tool_name.removeprefix("tools_")
+    if preferred in listing:
+        return preferred
+    return next(iter(listing), None)
+
+
+def get_tools_info(urls: List[str], host_os: str, config_path: Optional[Path] = None) -> List[Dict[str, str]]:
+    """Возвращает доступные для host_os инструменты из TOOLS: tool, variant, title."""
+    result = []
+    with _aqt_settings(urls, config_path):
+        meta = MetadataFactory(ArchiveId("tools", host_os, "desktop"), base_url=urls[0])
+        for tool_name, title in TOOLS.items():
+            try:
+                listing = meta.fetch_tool_long_listing(tool_name).table_data
+            except ArchiveDownloadError:
+                continue  # инструмента нет для этой ОС
+            variant = _main_tool_variant(tool_name, listing)
+            if variant:
+                result.append({
+                    "tool": tool_name,
+                    "variant": variant,
+                    "title": listing[variant].get("DisplayName") or title,
+                })
+    return result
+
+
 # =============================================================================
 # Установка
 # =============================================================================
 
-def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
+def _collect_packages(config: AqtConfig, base: str, plan: Dict[str, Any]) -> Tuple[List[QtPackage], Any]:
+    """Собирает пакеты всех компонентов плана. Возвращает (пакеты, target_config Qt или None)."""
+    packages: List[QtPackage] = []
+    qt_target = None
+
+    if plan.get("qt"):
+        qt_archives = retry_on_bad_connection(
+            lambda base_url: QtArchives(
+                os_name=config.host_os,
+                target=config.platform_host_os,
+                version_str=config.version,
+                arch=config.arch,
+                base=base_url,
+                modules=config.modules or None,
+                is_include_base_package=True,  # включаем базовый пакет
+                all_extra=False  # если нужны все модули, можно сделать True
+            ),
+            base,
+        )
+        packages += qt_archives.get_packages()
+        qt_target = qt_archives.get_target_config()
+        qt_target.os_name = Cli._get_effective_os_name(config.host_os)
+
+    for tool_name, variant in plan.get("tools", []):
+        if variant is None:
+            meta = MetadataFactory(ArchiveId("tools", config.host_os, "desktop"), base_url=base)
+            variant = _main_tool_variant(tool_name, meta.fetch_tool_long_listing(tool_name).table_data)
+        tool_archives = retry_on_bad_connection(
+            lambda base_url: ToolArchives(
+                os_name=config.host_os, target="desktop", tool_name=tool_name, base=base_url, arch=variant,
+            ),
+            base,
+        )
+        packages += tool_archives.get_packages()
+
+    for flavor, key in (("doc", "docs"), ("examples", "examples")):
+        modules = plan.get(key)
+        if modules is None:
+            continue
+        os_name, target = _sde_location(config.host_os, config.version)
+        # В «Всё» передаются модули Qt — оставляем только те, для которых есть документация
+        meta = MetadataFactory(ArchiveId("qt", os_name, target), base_url=base)
+        available = set(meta.fetch_modules_sde(flavor, Version(config.version)))
+        modules = [m for m in modules if m in available]
+        sde_archives = retry_on_bad_connection(
+            lambda base_url: SrcDocExamplesArchives(
+                flavor, os_name, target, config.version, base_url, modules=modules or None,
+            ),
+            base,
+        )
+        packages += sde_archives.get_packages()
+
+    return packages, qt_target
+
+
+def run_installation_with_urls(config: AqtConfig, urls: List[str], plan: Dict[str, Any]) -> None:
     """
-    Устанавливает Qt, используя переданные серверы.
+    Устанавливает компоненты по плану, используя переданные серверы:
+        plan = {"qt": bool,
+                "tools": [[имя инструмента, вариант или None], ...],
+                "docs": [модули] или None, "examples": [модули] или None}
+    Всё ставится одним вызовом run_installer в config.install_path.
     """
     # --- ПЕРЕНАСТРОЙКА ЛОГГЕРА AQT ---
     if config.install_path:
@@ -192,19 +319,7 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
         Settings.configfile = temp_ini.name
 
         try:
-            # Создаём архивы
-            qt_archives = QtArchives(
-                os_name=config.host_os,
-                target=config.platform_host_os,
-                version_str=config.version,
-                arch=config.arch,
-                base=urls[0],
-                modules=config.modules,
-                is_include_base_package=True,  # включаем базовый пакет
-                all_extra=False  # если нужны все модули, можно сделать True
-            )
-
-            packages = qt_archives.get_packages()
+            packages, qt_target = _collect_packages(config, urls[0], plan)
 
             install_path = config.install_path
             folder_created_by_us = False
@@ -229,6 +344,14 @@ def run_installation_with_urls(config: AqtConfig, urls: List[str]) -> None:
                 with tempfile.TemporaryDirectory() as temp_dir:
                     archive_dest = Path(temp_dir)
                     run_installer(packages, str(install_path), None, False, archive_dest, dry_run=False)
+
+                # Как в `aqt install-qt`: qt.conf, qconfig.pri, пути в qmake и т.п.
+                if qt_target is not None:
+                    desktop_dir, _ = Cli()._get_autodesktop_dir_and_arch(
+                        False, config.host_os, config.platform_host_os, install_path,
+                        Version(config.version), config.arch,
+                    )
+                    Updater.update(qt_target, install_path, desktop_dir)
 
             except Exception as e:
                 # Удаляем папку при ошибке установки, НО только если мы её сами создали

@@ -14,7 +14,7 @@ def is_successful(status_code: int) -> bool:
 def get_urls_from_config(config_path: Path) -> List[str]:
     """Возвращает уникальные URL из конфига."""
     config = configparser.ConfigParser()
-    config.read(config_path)
+    config.read(config_path, encoding="utf-8")
     urls = []
     
     baseurl = None

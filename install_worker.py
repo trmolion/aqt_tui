@@ -56,6 +56,7 @@ def main():
     config.version = data['version']
     config.arch = data['arch']
     config.modules = data['modules']
+    plan = data['plan']
     config.install_path = Path(data['install_path']) if data['install_path'] else None
 
     working_urls = data['working_urls']
@@ -73,7 +74,7 @@ def main():
         print("=== INSTALLATION STARTED ===", flush=True)
         # Пошла установка
         os.chdir(config.install_path)
-        run_installation_with_urls(config, working_urls)
+        run_installation_with_urls(config, working_urls, plan)
         
         # Ну и для красоты
         print("=== INSTALLATION SUCCESS ===", flush=True)

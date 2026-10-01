@@ -1,9 +1,14 @@
 from .radio_selector import RadioSelectorWidget
-from .install_qt import ConfigWidget, VersionWidget, CompilerWidget, ModulesWidget, ProgressWidget, PathWidget
+from .check_list import CheckListWidget
+from .install_qt import (
+    ConfigWidget, VersionWidget, CompilerWidget, ModulesWidget, ProgressWidget, PathWidget,
+    ToolsWidget, SdeModulesWidget,
+)
 from .config_details import ConfigDetailsWidget
 
 __all__ = [
-    "RadioSelectorWidget",
+    "RadioSelectorWidget", "CheckListWidget",
     "ConfigWidget", "VersionWidget", "CompilerWidget", "ModulesWidget", "ProgressWidget", "PathWidget",
+    "ToolsWidget", "SdeModulesWidget",
     "ConfigDetailsWidget",
 ]

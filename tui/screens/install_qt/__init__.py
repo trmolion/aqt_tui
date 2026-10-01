@@ -4,5 +4,10 @@ from .compiler_screen import CompilerWidget
 from .modules_screen import ModulesWidget
 from .progress_screen import ProgressWidget
 from .path_screen import PathWidget
+from .tools_screen import ToolsWidget
+from .sde_modules_screen import SdeModulesWidget
 
-__all__ = ["ConfigWidget", "VersionWidget", "CompilerWidget", "ModulesWidget", "ProgressWidget", "PathWidget"]
+__all__ = [
+    "ConfigWidget", "VersionWidget", "CompilerWidget", "ModulesWidget", "ProgressWidget", "PathWidget",
+    "ToolsWidget", "SdeModulesWidget",
+]

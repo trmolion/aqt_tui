@@ -62,3 +62,10 @@ Button:hover {
     text-align: center;
     text-style: bold;
 }
+/* Подпись «Что установить» в главном меню */
+#left_panel > .menu-caption {
+    color: $text-muted;
+    offset-x: 0;
+    padding: 0 1;
+    margin-top: 1;
+}

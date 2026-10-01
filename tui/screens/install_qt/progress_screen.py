@@ -22,8 +22,10 @@ class ProgressWidget(Widget):
         config_dict: Dict[str, Any],
         worker_path: str,
         on_done: Callable[[bool], None],
+        title: str = "Qt",
     ) -> None:
         super().__init__()
+        self._title = title
         self._config_dict = config_dict
         self._worker_path = worker_path
         self._on_done = on_done
@@ -37,7 +39,7 @@ class ProgressWidget(Widget):
         self._config_json_path: str = ""
 
     def compose(self) -> ComposeResult:
-        yield Label("Установка Qt...", classes="title-label")
+        yield Label(f"Установка: {self._title}...", classes="title-label")
         yield ProgressBar(total=100, show_eta=True, id="install_progress")
         yield RichLog(highlight=True, markup=False, wrap=True, id="install_log")
 
@@ -157,7 +159,7 @@ class ProgressWidget(Widget):
         success = exit_code == 0
         if success:
             self._rich_log.write("\n[green]Установка успешно завершена![/]")
-            self.notify("Установка Qt завершена успешно", severity="information")
+            self.notify(f"Установка «{self._title}» завершена успешно", severity="information")
         else:
             self._rich_log.write(f"\n[red]Ошибка установки: процесс завершился с кодом {exit_code}[/]")
             self.notify(f"Ошибка установки: код {exit_code}", severity="error")
