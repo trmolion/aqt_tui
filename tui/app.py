@@ -1,21 +1,24 @@
 import platform
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, ScrollableContainer
 from textual.reactive import reactive
 from textual.widgets import Header, Footer, Button, Label, Static
 
+from qt_scanner.scanner import InstalledQt, find_installed_qts, find_system_qt, installed_modules
 from scan_server.aqt_interface import AqtConfig, get_available_oses, get_available_platform
 from tui.sections import (
-    SECTIONS, STEPS, build_plan, format_step_value, step_done, version_target,
+    MENU_SECTIONS, SECTIONS, STEPS, build_plan, format_step_value, step_done, version_target,
 )
 from tui.screens import (
     RadioSelectorWidget,
     ConfigWidget, VersionWidget, CompilerWidget, ModulesWidget, ProgressWidget, PathWidget,
-    ToolsWidget, SdeModulesWidget,
+    ToolsWidget, SdeModulesWidget, ExistingQtModulesWidget,
     ConfigDetailsWidget,
 )
 
@@ -44,6 +47,12 @@ class AqtTuiApp(App):
         self._section: Optional[str] = None  # открытый раздел меню; None — главное меню
         self._left_buttons: Dict[str, Button] = {}
         self.available_oses = get_available_oses()
+        self.detected_host_os = _detect_host_os()
+
+        # Доустановка модулей к найденному Qt: свой конфиг, чтобы не трогать выбор в других разделах
+        self._existing_qt: Optional[InstalledQt] = None
+        self._existing_config = AqtConfig()
+        self._system_qt: Optional[tuple] = None  # (версия, prefix) Qt из пакетного менеджера
 
         # Кеш результатов проверки серверов (загружается один раз)
         self._server_results: List[Dict[str, Any]] = []
@@ -71,20 +80,53 @@ class AqtTuiApp(App):
 
     def on_mount(self) -> None:
         self._show_menu()
+        self._scan_installed_qts()
+
+    @property
+    def cfg(self) -> AqtConfig:
+        """Конфиг открытого раздела."""
+        return self._existing_config if self._section == "existing" else self.install_config
+
+    # =========================================================================
+    # Поиск установленных Qt (PATH, rc-файлы оболочек, ~/Qt)
+    # =========================================================================
+
+    @work(thread=True, exclusive=True, group="scan")
+    def _scan_installed_qts(self) -> None:
+        qts = find_installed_qts()
+        system_qt = find_system_qt()
+        self.call_from_thread(self._on_installed_qts_found, qts, system_qt)
+
+    def _on_installed_qts_found(self, qts: List[InstalledQt], system_qt: Optional[tuple]) -> None:
+        self._system_qt = system_qt
+        # уже определённую архитектуру не теряем
+        known = {q.prefix: q for q in self.installed_qts}
+        self.installed_qts = [known.get(q.prefix, q) for q in qts]
+        if self._section is None:
+            self._show_menu(show_summary=False)
+            self.update_main_settings()
 
     # =========================================================================
     # Левая панель: главное меню / шаги раздела
     # =========================================================================
 
-    def _show_menu(self) -> None:
+    def _show_menu(self, show_summary: bool = True) -> None:
         self._section = None
         buttons = [
             Button("Выбрать конфиг", name="config"),
             Button("Подробности конфига", name="config_details"),
             Label("Что установить", classes="menu-caption"),
         ]
-        buttons += [Button(title, name=f"section:{key}") for key, (title, _, _) in SECTIONS.items()]
-        self._rebuild_left(buttons)
+        for key in MENU_SECTIONS:
+            buttons.append(Button(SECTIONS[key][0], name=f"section:{key}"))
+            if key == "qt":
+                # под «Qt» — доустановка модулей к найденным установкам
+                if len(self.installed_qts) == 1:
+                    buttons.append(Button(f"+ модули {self.installed_qts[0].title}", name="existing"))
+                elif self.installed_qts:
+                    buttons.append(Button(f"+ модули к установленному Qt ({len(self.installed_qts)})",
+                                          name="existing"))
+        self._rebuild_left(buttons, show_summary)
 
     def _open_section(self, section: str) -> None:
         self._section = section
@@ -94,21 +136,22 @@ class AqtTuiApp(App):
         buttons.append(Button("Установить", name="install", variant="success"))
         self._rebuild_left(buttons)
 
-    def _rebuild_left(self, widgets: list) -> None:
+    def _rebuild_left(self, widgets: list, show_summary: bool = True) -> None:
         left_panel = self.query_one("#left_panel")
         left_panel.remove_children()
         left_panel.mount_all(widgets)
         self._left_buttons = {w.name: w for w in widgets if isinstance(w, Button)}
         self._refresh_left()
         self.call_after_refresh(widgets[0].focus)
-        self._show_main_settings()
+        if show_summary:
+            self._show_main_settings()
 
     def _is_enabled(self, name: str) -> bool:
-        c = self.install_config
+        c = self.cfg
         if name in ("config", "back"):
             return True
-        if name == "config_details" or name.startswith("section:"):
-            return bool(c.config_path)
+        if name in ("config_details", "existing") or name.startswith("section:"):
+            return bool(self.install_config.config_path)
         _, steps, _ = SECTIONS[self._section]
         if name == "install":
             return all(step_done(s, c) for s in steps)
@@ -131,12 +174,30 @@ class AqtTuiApp(App):
             if not c.config_path:
                 return f"{config_line}\n\nНажмите «Выбрать конфиг», чтобы начать."
             available = sum(1 for r in self._server_results if r["status"])
-            return (f"{config_line}\nДоступно серверов: {available} из {len(self._server_results)}\n\n"
+            text = (f"{config_line}\nДоступно серверов: {available} из {len(self._server_results)}\n\n"
                     "Выберите в меню слева, что установить.")
+            if self._system_qt:
+                version, prefix = self._system_qt
+                text += (f"\n\nНайден системный Qt {version} ({prefix}) — он установлен пакетным менеджером, "
+                         "модули к нему ставятся тоже через него")
+                if shutil.which("pacman"):
+                    text += ", например: sudo pacman -S qt6-charts"
+                text += "."
+            return text
 
         title, steps, contents = SECTIONS[self._section]
         lines = [f"Раздел: {title}", f"Будет установлено: {contents}", config_line, ""]
-        lines += [f"{STEPS[step][1]}: {format_step_value(step, c)}" for step in steps]
+        if self._section == "existing" and self._existing_qt is None:
+            lines.append("Qt: не выбран")
+            return "\n".join(lines)
+        if self._section == "existing":
+            qt = self._existing_qt
+            present = sorted(installed_modules(qt.prefix))
+            lines += [f"Qt: {qt.title}, найден в {qt.source}", f"Папка: {qt.prefix}",
+                      f"Уже установлено: {', '.join(present) or 'не удалось определить'}"]
+            lines.append(f"Новые модули: {format_step_value('modules', self.cfg)}")
+            return "\n".join(lines)
+        lines += [f"{STEPS[step][1]}: {format_step_value(step, self.cfg)}" for step in steps]
         return "\n".join(lines)
 
     def update_main_settings(self) -> None:
@@ -160,6 +221,9 @@ class AqtTuiApp(App):
             return
         if name.startswith("section:"):
             self._open_section(name.removeprefix("section:"))
+            return
+        if name == "existing":
+            self._open_existing()
             return
         if name == "install":
             self.run_installation()
@@ -191,9 +255,9 @@ class AqtTuiApp(App):
     def _apply_step(self, step: str, field: str, value: Any) -> None:
         """Общий коллбэк шагов: None — отмена/ошибка, иначе сохранить значение."""
         if value is not None:
-            self.install_config.set(field, value)
+            self.cfg.set(field, value)
             self._refresh_left()
-            self.notify(f"{STEPS[step][1]}: {format_step_value(step, self.install_config)}")
+            self.notify(f"{STEPS[step][1]}: {format_step_value(step, self.cfg)}")
         self._show_main_settings()
 
     # =========================================================================
@@ -243,8 +307,34 @@ class AqtTuiApp(App):
     # Шаги разделов
     # =========================================================================
 
+    def _open_existing(self) -> None:
+        """
+        Раздел доустановки. Если найден один Qt — сразу таблица его модулей,
+        если несколько — сначала выбор установки.
+        """
+        self._existing_qt = None
+        self._existing_config = AqtConfig()
+        self._existing_config.config_path = self.install_config.config_path
+        self._open_section("existing")
+        if len(self.installed_qts) == 1:
+            self._select_existing(self.installed_qts[0])
+        else:
+            self._show_step("installed_qt")
+            self.current_section = "step:installed_qt"
+
+    def _select_existing(self, qt: InstalledQt) -> None:
+        """Выбран найденный Qt — открыть его модули."""
+        self._existing_qt = qt
+        c = self._existing_config
+        c.version = qt.version
+        c.install_path = qt.root
+        c.host_os = c.platform_host_os = c.arch = c.modules = None
+        self._refresh_left()
+        self._show_step("modules")
+        self.current_section = "step:modules"
+
     def _show_step(self, step: str) -> None:
-        c = self.install_config
+        c = self.cfg
         working_urls = self.get_working_urls()
         if not working_urls:
             self.notify("Нет доступных серверов, проверьте конфиг", severity="warning")
@@ -275,6 +365,25 @@ class AqtTuiApp(App):
                 working_urls, c.host_os, c.platform_host_os, c.version, done("arch"),
                 cached_arches=self._arches_cache.get((c.host_os, c.platform_host_os, c.version)),
                 current_arch=c.arch, config_path=c.config_path,
+            ))
+        elif step == "installed_qt":
+            self._mount_right(RadioSelectorWidget(
+                "Выбор установленного Qt",
+                [(f"{qt.title} — {qt.location}", qt) for qt in self.installed_qts],
+                self._select_existing,
+                self._existing_qt,
+            ))
+        elif step == "modules" and self._section == "existing":
+            qt = self._existing_qt
+
+            def on_modules(modules: Optional[List[str]]) -> None:
+                if modules is not None:
+                    # архитектура определена виджетом по серверу — нужна установщику
+                    c.host_os, c.platform_host_os, c.arch = qt.host_os, qt.target, qt.arch
+                self._apply_step("modules", "modules", modules)
+
+            self._mount_right(ExistingQtModulesWidget(
+                qt, working_urls, on_modules, current_modules=c.modules, config_path=c.config_path,
             ))
         elif step == "modules":
             self._mount_right(ModulesWidget(
@@ -307,7 +416,7 @@ class AqtTuiApp(App):
             self.notify("Не все параметры выбраны", severity="warning")
             return
 
-        c = self.install_config
+        c = self.cfg
         config_dict = {
             "config_path": str(c.config_path) if c.config_path else None,
             "host_os": c.host_os,
@@ -321,8 +430,14 @@ class AqtTuiApp(App):
         }
         worker_path = str(Path(__file__).parent.parent / "install_worker.py")
         title = SECTIONS[self._section][0]
+        if self._section == "existing":
+            title = f"модули для {self._existing_qt.title}"
         self._mount_right(ProgressWidget(config_dict, worker_path, self._on_install_done, title))
         self.current_section = "install"
 
-    def _on_install_done(self, _success: bool) -> None:
+    def _on_install_done(self, success: bool) -> None:
+        if success and self._section == "existing":
+            self._existing_config.modules = None  # поставленные модули теперь отмечены как установленные
+            self._refresh_left()
+        self._scan_installed_qts()  # новый Qt мог появиться в ~/Qt или PATH
         self._show_main_settings()

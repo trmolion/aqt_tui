@@ -72,7 +72,8 @@ def candidate_raw_urls(url: str) -> List[str]:
 def download_config(url: str) -> Path:
     """
     Скачивает конфиг по ссылке, проверяет, что это корректный .ini с серверами,
-    и сохраняет его в кеш. Возвращает путь к локальной копии.
+    и сохраняет его в кеш. В кеше остаётся только он — предыдущие копии удаляются.
+    Возвращает путь к локальной копии.
     """
     error: Optional[Exception] = None
     for raw_url in candidate_raw_urls(url):
@@ -94,4 +95,10 @@ def download_config(url: str) -> Path:
     if not get_urls_from_config(path):
         path.unlink()
         raise ValueError("В конфиге нет ни baseurl, ни fallbacks")
+
+    # Имя файла зависит от ссылки, поэтому при смене ссылки меняется и путь — по нему App
+    # понимает, что конфиг другой, и сбрасывает кеш метаданных
+    for old in path.parent.glob("*.ini"):
+        if old != path:
+            old.unlink(missing_ok=True)
     return path

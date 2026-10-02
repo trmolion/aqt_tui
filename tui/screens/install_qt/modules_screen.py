@@ -1,10 +1,10 @@
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Set
 
+from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import ScrollableContainer, Vertical, Center
-from textual.coordinate import Coordinate
 from textual.widget import Widget
 from textual.widgets import Button, DataTable, Label, ProgressBar
 
@@ -18,7 +18,9 @@ class ModulesWidget(Widget):
         ModulesWidget { height: 100%; }
         ModulesWidget Center { width: 100%; margin-top: 1; }
         ModulesWidget Button { width: 55%; min-width: 20; }
+        ModulesWidget .hint { color: $text-muted; text-style: none; }
     """
+
     def __init__(
         self,
         working_urls: List[str],
@@ -30,6 +32,7 @@ class ModulesWidget(Widget):
         cached_modules=None,
         current_modules: Optional[List[str]] = None,
         config_path: Optional[Path] = None,
+        installed_modules: Optional[Set[str]] = None,
     ) -> None:
         super().__init__()
         self._working_urls = working_urls
@@ -41,6 +44,9 @@ class ModulesWidget(Widget):
         self._cached_modules = cached_modules
         self._current_modules = current_modules or []
         self._config_path = config_path
+        # Доустановка к существующему Qt: эти модули уже стоят, выбрать можно только новые
+        self._installed_modules = installed_modules
+        self._selected: Set[str] = set(self._current_modules) - (installed_modules or set())
         self._sort_reverse = False
         self._last_sort_column = None
 
@@ -82,9 +88,8 @@ class ModulesWidget(Widget):
         table.cursor_type = "row"
 
         for module_name, info in module_data.table_data.items():
-            checkbox = "☑" if module_name in self._current_modules else "☐"
             table.add_row(
-                checkbox, module_name,
+                self._checkbox(module_name), module_name,
                 info.get("DisplayName", ""),
                 info.get("ReleaseDate", ""),
                 info.get("CompressedSize", ""),
@@ -92,6 +97,9 @@ class ModulesWidget(Widget):
                 key=module_name,
             )
 
+        if self._installed_modules is not None:
+            content.mount(Label("Серый X — уже установлен, отметьте модули для доустановки",
+                                classes="hint"))
         wrapper = ScrollableContainer()
         content.mount(wrapper)
         wrapper.mount(table)
@@ -130,12 +138,14 @@ class ModulesWidget(Widget):
     # События таблицы
     # -------------------------------------------------------------------------
 
-    def on_data_table_row_selected(self, event: DataTable.CellSelected) -> None:
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         event.stop()
-        table = event.data_table
-        col_index = table.get_column_index("select")
-        current = table.get_row_at(event.cursor_row)[col_index]
-        table.update_cell_at(Coordinate(event.cursor_row, col_index), "☑" if current == "☐" else "☐")
+        module = event.row_key.value
+        if module in (self._installed_modules or ()):
+            self.notify("Этот модуль уже установлен", severity="information")
+            return
+        self._selected ^= {module}
+        event.data_table.update_cell(event.row_key, "select", self._checkbox(module))
 
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         event.stop()
@@ -156,23 +166,39 @@ class ModulesWidget(Widget):
         if event.button.id == "select_all_modules":
             event.stop()
             table = self.query_one("#modules_table", DataTable)
-            col_index = table.get_column_index("select")
-            for row_index in range(len(table.rows)):
-                table.update_cell_at(Coordinate(row_index, col_index), "☑")
+            installed = self._installed_modules or set()
+            for row_key in table.rows:
+                if row_key.value not in installed:
+                    self._selected.add(row_key.value)
+                    table.update_cell(row_key, "select", self._checkbox(row_key.value))
         elif event.button.id == "modules_done_btn":
             event.stop()
             table = self.query_one("#modules_table", DataTable)
-            col_index = table.get_column_index("select")
-            selected = [
-                table.get_row(row_key)[1]
-                for row_key in table.rows
-                if table.get_row(row_key)[col_index] == "☑"
-            ]
+            selected = [row_key.value for row_key in table.rows if row_key.value in self._selected]
+            if self._installed_modules is not None and not selected:
+                self.notify("Отметьте модули для доустановки", severity="warning")
+                return
             self._on_done(selected)
 
     # -------------------------------------------------------------------------
     # Вспомогательное
     # -------------------------------------------------------------------------
+
+    def _checkbox(self, module: str) -> Text:
+        """
+        Ячейка «Выбрать» как в SelectionList: пустой квадрат, зелёный X — выбран,
+        серый X — уже установлен (снять нельзя). ✔ не используем: во многих терминальных
+        шрифтах он рисуется эмодзи двойной ширины и ломает строку.
+        """
+        colors = self.app.get_css_variables()
+        panel, success = colors["panel"], colors["text-success"]
+        if module in (self._installed_modules or ()):
+            inner, color = "X", colors["foreground-darken-3"]
+        elif module in self._selected:
+            inner, color = "X", success
+        else:
+            inner, color = " ", panel
+        return Text.assemble(("▐", panel), (inner, f"bold {color} on {panel}"), ("▌", panel))
 
     def _parse_size(self, size_str: str) -> float:
         if not size_str:

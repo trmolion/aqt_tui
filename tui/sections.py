@@ -13,13 +13,19 @@ SECTIONS: Dict[str, Tuple[str, List[str], str]] = {
     "docs": ("Документация", ["host_os", "version", "doc_modules", "path"], "документация Qt"),
     "examples": ("Примеры", ["host_os", "version", "example_modules", "path"], "примеры Qt"),
     "tools": ("Инструменты", ["host_os", "tools", "path"], "выбранные инструменты"),
+    # Не показывается среди разделов меню: открывается кнопкой найденного Qt (tui/app.py)
+    "existing": ("Модули для установленного Qt", ["installed_qt", "modules"], "новые модули в уже установленный Qt"),
 }
+
+# Разделы, кнопки которых строятся из SECTIONS в главном меню
+MENU_SECTIONS = ["all", "qt", "creator", "docs", "examples", "tools"]
 
 # Инструменты, которые входят в «Всё»
 ALL_TOOLS = ["tools_qtcreator_gui", "tools_cmake", "tools_ninja"]
 
 # шаг → (название кнопки, подпись в сводке)
 STEPS: Dict[str, Tuple[str, str]] = {
+    "installed_qt": ("Выбор установленного Qt", "Qt"),
     "host_os": ("Выбор ОС", "ОС"),
     "platform": ("Выбор платформы", "Платформа"),
     "version": ("Выбор версии Qt", "Версия Qt"),
@@ -33,6 +39,7 @@ STEPS: Dict[str, Tuple[str, str]] = {
 
 # шаг → поле AqtConfig
 STEP_FIELDS: Dict[str, str] = {
+    "installed_qt": "install_path",  # выбор найденного Qt задаёт папку установки
     "host_os": "host_os",
     "platform": "platform_host_os",
     "version": "version",
@@ -75,7 +82,9 @@ def version_target(section: str, config: AqtConfig) -> Optional[str]:
 
 def build_plan(section: str, config: AqtConfig) -> Dict[str, Any]:
     """План для install_worker: что именно ставить в выбранном разделе."""
-    plan: Dict[str, Any] = {"qt": section in ("all", "qt"), "tools": [], "docs": None, "examples": None}
+    plan: Dict[str, Any] = {
+        "qt": section in ("all", "qt", "existing"), "tools": [], "docs": None, "examples": None,
+    }
     if section == "all":
         plan["tools"] = [[tool, None] for tool in ALL_TOOLS]
         plan["docs"] = list(config.modules or [])  # лишние модули отфильтрует установщик
@@ -87,4 +96,6 @@ def build_plan(section: str, config: AqtConfig) -> Dict[str, Any]:
         plan["docs"] = list(config.doc_modules or [])
     elif section == "examples":
         plan["examples"] = list(config.example_modules or [])
+    elif section == "existing":
+        plan["qt_base"] = False  # базовый пакет уже установлен — ставим только модули
     return plan

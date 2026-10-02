@@ -13,6 +13,14 @@ class CheckListWidget(Widget):
     CheckListWidget { height: 100%; }
     CheckListWidget .hint { color: $text-muted; text-style: none; }
     CheckListWidget SelectionList { height: 1fr; margin-top: 1; }
+    /* по умолчанию невыбранный пункт — тёмный X, его путают с отмеченным: делаем пустой квадрат */
+    CheckListWidget SelectionList > .selection-list--button,
+    CheckListWidget SelectionList > .selection-list--button-highlighted { color: $panel; }
+    CheckListWidget SelectionList > .selection-list--button-selected,
+    CheckListWidget SelectionList > .selection-list--button-selected-highlighted {
+        color: $text-success;
+        text-style: bold;
+    }
     CheckListWidget #check_list_buttons { height: auto; align: center middle; margin-top: 1; }
     CheckListWidget #check_list_buttons Button { width: 40%; min-width: 16; margin: 0 1; }
     """
@@ -38,6 +46,7 @@ class CheckListWidget(Widget):
         yield Label(self._title)
         if self._hint:
             yield Label(self._hint, classes="hint")
+        yield Label("Пробел, Enter или клик — отметить пункт", classes="hint")
         yield SelectionList(*[(prompt, value, value in self._selected) for prompt, value in self._items])
         with Horizontal(id="check_list_buttons"):
             yield Button("Выбрать всё", id="check_list_all", variant="primary")

@@ -14,7 +14,7 @@ from aqt.archives import QtArchives, QtPackage, SrcDocExamplesArchives, ToolArch
 from aqt.exceptions import ArchiveDownloadError
 from aqt.helper import MyConfigParser, Settings, retry_on_bad_connection
 from aqt.installer import Cli, run_installer
-from aqt.metadata import ArchiveId, MetadataFactory, Version, ModuleData
+from aqt.metadata import ArchiveId, MetadataFactory, ModuleData, QtRepoProperty, Version
 from aqt.updater import Updater
 
 
@@ -178,6 +178,30 @@ def get_available_modules(
         return meta.fetch_long_modules(version_obj, arch)
 
 
+def resolve_installed_arch(
+    urls: List[str], host_os: str, version: str, arch_dir: str, config_path: Optional[Path] = None,
+) -> Tuple[str, str, str]:
+    """
+    По папке установленного Qt (gcc_64, android_arm64_v8a, …) находит (host_os, target, arch) в терминах aqt.
+    Перебирает платформы хоста и all_os (wasm), сравнивая имя папки с каталогом каждой архитектуры.
+    """
+    version_obj = Version(version)
+    with _aqt_settings(urls, config_path):
+        for host in (host_os, "all_os"):
+            for target in ArchiveId.TARGETS_FOR_HOST[host]:
+                if target == "qt":
+                    continue  # all_os/qt — только документация и примеры
+                try:
+                    meta = MetadataFactory(ArchiveId("qt", host, target), base_url=urls[0])
+                    arches = meta.fetch_arches(version_obj)
+                except ArchiveDownloadError:
+                    continue  # этой версии нет для платформы
+                for arch in arches:
+                    if QtRepoProperty.get_arch_dir_name(host, arch, version_obj) == arch_dir:
+                        return host, target, arch
+    raise ValueError(f"Не удалось определить архитектуру Qt {version} для папки {arch_dir}")
+
+
 def _sde_location(host_os: str, version: str) -> Tuple[str, str]:
     """Где лежат документация и примеры: для Qt >= 6.7 — в общем разделе all_os/qt (как в aqt)."""
     if Version(version) >= Version("6.7.0"):
@@ -244,14 +268,17 @@ def _collect_packages(config: AqtConfig, base: str, plan: Dict[str, Any]) -> Tup
                 arch=config.arch,
                 base=base_url,
                 modules=config.modules or None,
-                is_include_base_package=True,  # включаем базовый пакет
+                # False — доустановка модулей к уже установленному Qt (как `aqt install-qt --noarchives`)
+                is_include_base_package=plan.get("qt_base", True),
                 all_extra=False  # если нужны все модули, можно сделать True
             ),
             base,
         )
         packages += qt_archives.get_packages()
-        qt_target = qt_archives.get_target_config()
-        qt_target.os_name = Cli._get_effective_os_name(config.host_os)
+        # Патчить qmake и qt.conf нужно только при установке базового пакета (как в aqt)
+        if plan.get("qt_base", True):
+            qt_target = qt_archives.get_target_config()
+            qt_target.os_name = Cli._get_effective_os_name(config.host_os)
 
     for tool_name, variant in plan.get("tools", []):
         if variant is None:
@@ -288,7 +315,7 @@ def _collect_packages(config: AqtConfig, base: str, plan: Dict[str, Any]) -> Tup
 def run_installation_with_urls(config: AqtConfig, urls: List[str], plan: Dict[str, Any]) -> None:
     """
     Устанавливает компоненты по плану, используя переданные серверы:
-        plan = {"qt": bool,
+        plan = {"qt": bool, "qt_base": bool (по умолчанию True; False — только модули),
                 "tools": [[имя инструмента, вариант или None], ...],
                 "docs": [модули] или None, "examples": [модули] или None}
     Всё ставится одним вызовом run_installer в config.install_path.
